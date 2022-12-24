@@ -1,0 +1,8 @@
+*.exe
+*.exp
+*.swp
+*.obj
+*.lib
+*.pdb
+.session.vim
+
