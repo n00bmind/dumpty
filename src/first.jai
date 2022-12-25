@@ -6,18 +6,22 @@
 #import "System";
 #import "Window_Creation";
 #import "Input";
-#import "Windows";
 // TODO How to enable this?
 #import "GL"; //( DUMP_GL_ERRORS = true );
 Simp  :: #import "Simp";
 
+#if OS == .WINDOWS {
+    #import "Windows";
+}
+
 #load "opengl.jai";
 
 // TODO Add to autosaved state & configuration
-WINDOW_WIDTH  :: 900;
+INIT_WINDOW_WIDTH  :: 900;
 //WINDOW_HEIGHT :: 720;
 
 mainWindow: Window_Type;
+glState: OpenGLState;
 
 #program_export
 
@@ -34,16 +38,23 @@ main :: ()
     path = get_working_directory();
     print( "Working directory is '%'\n", path );
 
-    // TODO Do this in a cross-platform way
-    screenWidth := GetSystemMetrics( SM_CXSCREEN );
-    screenHeight := GetSystemMetrics( SM_CYSCREEN );
+    #if OS == .WINDOWS
+    {
+        SetProcessDPIAware();
+
+        timeBeginPeriod(1);
+
+        screenWidth := GetSystemMetrics( SM_CXSCREEN );
+        screenHeight := GetSystemMetrics( SM_CYSCREEN );
+    }
 
     // TODO May want to get more platform specific at some point for events etc? idk
-    mainWindow = create_window( WINDOW_WIDTH, screenHeight, "r.e.p.l.r.", (screenWidth - WINDOW_WIDTH) / 2, 0 );
+    // Assume the taskbar is at the bottom and it has "some" height
+    mainWindow = create_window( INIT_WINDOW_WIDTH, screenHeight - 100, "r.e.p.l.r.", (screenWidth - INIT_WINDOW_WIDTH) / 2, 0 );
     if( !mainWindow )
         exit( 1 );
 
-    if( !OpenGLInit( mainWindow ) )
+    if( !OpenGLInit( *glState, mainWindow ) )
         exit( 1 );
 
     pixelHeight := screenHeight / 24;
@@ -54,11 +65,30 @@ main :: ()
         exit( 1 );
     }
 
+    windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
+    //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
+
     quit := false;
     while !quit
     {
         update_window_events();
 
+        for get_window_resizes()
+        {
+            if it.window == mainWindow
+            {
+                sizeChanged := (it.width != windowWidth) || (it.height != windowHeight);
+
+                if sizeChanged
+                {
+                    windowWidth  = it.width;
+                    windowHeight = it.height;
+
+                    //print( "New window dimensions: %, %\n", windowWidth, windowHeight );
+                }
+                //if sizeChanged my_init_fonts();  // Resize the font for the new window size.
+            }
+        }
         for events_this_frame
         {
             if it.type == .QUIT
@@ -68,21 +98,23 @@ main :: ()
                 if it.key_pressed == 0
                     continue;
 
+                if it.key_code == .F4 && it.alt_pressed
+                    quit = true;
                 //if it.key_code == .ESCAPE
                     //quit = true;
             }
         }
 
-        OpenGLDrawTest( WINDOW_WIDTH, screenHeight );
+        OpenGLDrawTest( *glState, windowWidth, windowHeight );
 
-        swap_buffers( mainWindow );
+        Swap( mainWindow );
     }
     
     exit( 0 );
 }
 
 // Taken from the Simp OpenGL backend
-swap_buffers :: ( window: Window_Type, vsync := true )
+Swap :: ( window: Window_Type, vsync := true )
 {
     #if OS == .WINDOWS {
         dc := GetDC(window);
