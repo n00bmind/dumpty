@@ -1,5 +1,7 @@
 OpenGLState :: struct
 {
+    windowWidth, windowHeight : float;
+
     vertexBuffer : GLuint;
     indexBuffer : GLuint;
 
@@ -47,7 +49,6 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     state.whiteTextureHandle = OpenGLAllocateTexture( cast(*u8)*state.white, 1, 1, true, null );
 
     // Setup render state: alpha-blending enabled, no face culling, no depth testing,
-    // TODO Review
     glEnable( GL_BLEND );
     glBlendEquation( GL_FUNC_ADD );
     glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
@@ -71,29 +72,101 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     return true;
 }
 
-prevOrthoMatrix: Matrix4;
-OpenGLDrawTest :: ( state: *OpenGLState, screenWidth: int, screenHeight: int )
+OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color := Vector4.{1, 1, 1, 1} )
 {
-    renderWidth := cast(float)screenWidth;  
-    renderHeight := cast(float)screenHeight;
+    vertices : [..] TextVertex;
+
+    draw_letter_quad :: ( font: *Simp.Dynamic_Font, quad: Simp.Font_Quad, color: Vector4, windowHeight: float, vertices: *[..] TextVertex )
+    {
+/*
+        // @Robustness: These assume our coordinates are in screenspace...
+        if quad.x1 < 0 return;
+        if quad.x0 > cast(float) render_target_width return;
+        if quad.y1 < 0 return;
+        if quad.y0 > cast(float) render_target_height return;
+*/
+        page := quad.glyph.page;
+        
+        if page.bitmap_data.width  <= 1 return;
+        if page.bitmap_data.height <= 1 return;
+
+        using quad;
+        uv0 := make_vector2(u0, v0);
+        uv1 := make_vector2(u1, v0);
+        uv2 := make_vector2(u1, v1);
+        uv3 := make_vector2(u0, v1);
+        
+        // NOTE Invert y coord
+        array_add( vertices, .{ position = make_vector3( p0.x, windowHeight - p0.y, 0 ), color = color, uv = uv0 } );
+        array_add( vertices, .{ position = make_vector3( p1.x, windowHeight - p1.y, 0 ), color = color, uv = uv1 } );
+        array_add( vertices, .{ position = make_vector3( p2.x, windowHeight - p2.y, 0 ), color = color, uv = uv2 } );
+
+        array_add( vertices, .{ position = make_vector3( p0.x, windowHeight - p0.y, 0 ), color = color, uv = uv0 } );
+        array_add( vertices, .{ position = make_vector3( p2.x, windowHeight - p2.y, 0 ), color = color, uv = uv2 } );
+        array_add( vertices, .{ position = make_vector3( p3.x, windowHeight - p3.y, 0 ), color = color, uv = uv3 } );
+    }
+
+    
+    last_texture: s64 = -1;
+
+    array_reserve( *vertices, font.current_quads.count * 6 );
+    for quad, i: font.current_quads
+    {
+        page := quad.glyph.page;
+        map  := *page.texture;
+        
+        if page.dirty
+        {
+            print( "Loading glyph texture from %\n", page.bitmap_data );
+            Simp.texture_load_from_bitmap( map, page.bitmap_data );
+            page.dirty = false;
+        }
+ 
+        if map.gl_handle != last_texture
+        {
+            handle := map.gl_handle;
+            last_texture = handle;
+
+            glActiveTexture( GL_TEXTURE0 );
+            glBindTexture( GL_TEXTURE_2D, handle );  // Bind handle to slot 0.
+            // TODO Generates invalid value (due to GL version perhaps?)
+            //glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 0 );
+            glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+            glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+            glUniform1i( state.textShader.textSamplerUni, 0 );
+        }
+
+        draw_letter_quad( font, quad, color, state.windowHeight, *vertices );
+    }
+
+    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
+    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data,
+                  GL_STREAM_DRAW );
+
+    glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
+}
+
+//prevOrthoMatrix: Matrix4;
+OpenGLDrawFSQTest :: ( state: *OpenGLState )
+{
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
-    fbWidth := renderWidth; // * io.DisplayFramebufferScale.x);
-    fbHeight := renderHeight; // * io.DisplayFramebufferScale.y);
+    fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
+    fbHeight := state.windowHeight; // * io.DisplayFramebufferScale.y);
 
     glViewport( 0, 0, xx fbWidth, xx fbHeight );
 
     projection := orthographic_projection_matrix( 0,
-                                                  renderWidth, renderHeight,
+                                                  state.windowWidth, state.windowHeight,
                                                   0, 0, 1 );
-    if( projection != prevOrthoMatrix )
-    {
-        print( "Orthographic matrix: \n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n",
-               projection._11, projection._12, projection._13, projection._14,
-               projection._21, projection._22, projection._23, projection._24,
-               projection._31, projection._32, projection._33, projection._34,
-               projection._41, projection._42, projection._43, projection._44 );
-        prevOrthoMatrix = projection;
-    }
+    //if( projection != prevOrthoMatrix )
+    //{
+        //print( "Orthographic matrix: \n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n",
+               //projection._11, projection._12, projection._13, projection._14,
+               //projection._21, projection._22, projection._23, projection._24,
+               //projection._31, projection._32, projection._33, projection._34,
+               //projection._41, projection._42, projection._43, projection._44 );
+        //prevOrthoMatrix = projection;
+    //}
     glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
     // TODO Probably not needed per frame?
@@ -101,23 +174,25 @@ OpenGLDrawTest :: ( state: *OpenGLState, screenWidth: int, screenHeight: int )
     glBindTexture( GL_TEXTURE_2D, state.whiteTextureHandle );  // Bind handle to slot 0.
     glUniform1i( state.textShader.textSamplerUni, 0 );
 
-    //DumpGLErrors( "frame setup" );
+    DumpGLErrors( "frame setup" );
 
     //glClearColor( 0.15, 0.15, 0.2, 1.0 ); 
-    glClearColor( 1, 0.15, 0.2, 1.0 ); 
+    // Clear background with red, cause if we see it that's bad!
+    glClearColor( 1, 0, 0, 1.0 ); 
     glClear( GL_COLOR_BUFFER_BIT );
 
+    // Draw an apron with 1-pixel thickness right at the window edges to check we have the bounds right
     verts: [4] TextVertex =
     .[
-        .{ color = .{ 1, 0, 0, 1 }, uv = .{ 0, 0 } },
+        .{ color = .{ 1, 1, 0, 1 }, uv = .{ 0, 0 } },
         .{ color = .{ 0, 1, 0, 1 }, uv = .{ 1, 0 } },
         .{ color = .{ 0, 0, 1, 1 }, uv = .{ 0, 1 } },
         .{ color = .{ 1, 0, 1, 1 }, uv = .{ 1, 1 } },
     ];
-    verts[0].position = .{ 0,               0,              0 }; 
-    verts[1].position = .{ renderWidth,     0,              0 }; 
-    verts[2].position = .{ 0,               renderHeight,   0 }; 
-    verts[3].position = .{ renderWidth,     renderHeight,   0 }; 
+    verts[0].position = .{ 0,                   0,              0 }; 
+    verts[1].position = .{ state.windowWidth,   0,              0 }; 
+    verts[2].position = .{ 0,                   state.windowHeight,   0 }; 
+    verts[3].position = .{ state.windowWidth,   state.windowHeight,   0 }; 
 
     indices: [6] u32 =
     .[
@@ -134,12 +209,25 @@ OpenGLDrawTest :: ( state: *OpenGLState, screenWidth: int, screenHeight: int )
 
     glDrawElements( GL_TRIANGLES, indices.count, GL_UNSIGNED_INT, null );
 
-    // TODO Draw an apron with some thickness right at the window edges to check we have the bounds right
+    // Fill with a dark quad
+    inset :: 1;
+    verts[0].position = .{ 0 + inset,                   0 + inset,              0 }; 
+    verts[1].position = .{ state.windowWidth - inset,   0 + inset,              0 }; 
+    verts[2].position = .{ 0 + inset,                   state.windowHeight - inset,   0 }; 
+    verts[3].position = .{ state.windowWidth - inset,   state.windowHeight - inset,   0 }; 
+    for * verts
+    {
+        it.color = .{ 0.15, 0.15, 0.2, 1 };
+    }
+    glBufferData( GL_ARRAY_BUFFER, verts.count * size_of(TextVertex), verts.data,
+                  GL_STREAM_DRAW );
+    glDrawElements( GL_TRIANGLES, indices.count, GL_UNSIGNED_INT, null );
 }
 
 #scope_file
 
 #import "Math";
+Simp  :: #import "Simp";
 
 TextVertex :: struct
 {
@@ -191,7 +279,6 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
     {
         shaderObj := glCreateShader( shaderType );
 
-        //shader_str := temp_c_string(shaderString);
         shaders: [2] *u8;
         lengths: [2] s32;
 

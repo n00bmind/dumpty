@@ -19,6 +19,7 @@ Simp  :: #import "Simp";
 // TODO Add to autosaved state & configuration
 INIT_WINDOW_WIDTH  :: 900;
 //WINDOW_HEIGHT :: 720;
+FONT_SIZE :: 16;
 
 mainWindow: Window_Type;
 glState: OpenGLState;
@@ -57,7 +58,7 @@ main :: ()
     if( !OpenGLInit( *glState, mainWindow ) )
         exit( 1 );
 
-    pixelHeight := screenHeight / 24;
+    pixelHeight := FONT_SIZE;
     mainFont := Simp.get_font_at_size("data/fonts", "consolas_nf_regular.ttf", pixelHeight );
     if( mainFont == null )
     {
@@ -105,7 +106,13 @@ main :: ()
             }
         }
 
-        OpenGLDrawTest( *glState, windowWidth, windowHeight );
+        glState.windowWidth = cast(float)windowWidth;  
+        glState.windowHeight = cast(float)windowHeight;
+
+        OpenGLDrawFSQTest( *glState );
+        Simp.prepare_text( mainFont, "Hello, Sailor!" );
+        Simp.generate_quads_for_prepared_text( mainFont, 100, 100, 0 );
+        OpenGLDrawFontQuads( *glState, mainFont ); //, .{ 0, 0, 0, 1 } );
 
         Swap( mainWindow );
     }
