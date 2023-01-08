@@ -19,10 +19,14 @@ Simp  :: #import "Simp";
 // TODO Add to autosaved state & configuration
 INIT_WINDOW_WIDTH  :: 900;
 //WINDOW_HEIGHT :: 720;
-FONT_SIZE :: 16;
+FONT_SIZE :: 24;
 
 mainWindow: Window_Type;
 glState: OpenGLState;
+
+Init :: #type () -> int; // #elsewhere replr; // #foreign replr;
+// TODO So far it seems this must be relative to the current file
+//replr :: #library "../bin/replr";
 
 #program_export
 
@@ -35,9 +39,21 @@ main :: ()
 {
     path := path_strip_filename( get_path_of_running_executable() );
     set_working_directory( join( path, "/.." ) );
-
     path = get_working_directory();
     print( "Working directory is '%'\n", path );
+
+
+    init : Init = null;
+    appDLL := LoadLibraryA( "replr.dll" );
+    if appDLL
+    {
+        // Cast to void* first to avoid MSVC whining
+        init = cast(Init)GetProcAddress( appDLL, "Init" );
+        print( "Found 'Init' func at %\n", init );
+    }
+    result := init();
+    print( "DLL returned: %\n", result );
+
 
     #if OS == .WINDOWS
     {
@@ -143,4 +159,5 @@ Swap :: ( window: Window_Type, vsync := true )
         assert(false);
     }
 }
+
 
