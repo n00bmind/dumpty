@@ -6,6 +6,7 @@
 #import "System";
 #import "Window_Creation";
 #import "Input";
+#import "File_Utilities";
 // TODO How to enable this?
 #import "GL"; //( DUMP_GL_ERRORS = true );
 Simp  :: #import "Simp";
@@ -20,13 +21,12 @@ Simp  :: #import "Simp";
 INIT_WINDOW_WIDTH  :: 900;
 //WINDOW_HEIGHT :: 720;
 FONT_SIZE :: 24;
+APP_DLL_NAME :: "replr";
 
 mainWindow: Window_Type;
 glState: OpenGLState;
 
-Init :: #type () -> int; // #elsewhere replr; // #foreign replr;
-// TODO So far it seems this must be relative to the current file
-//replr :: #library "../bin/replr";
+test : () -> string = null;
 
 #program_export
 
@@ -41,19 +41,6 @@ main :: ()
     set_working_directory( join( path, "/.." ) );
     path = get_working_directory();
     print( "Working directory is '%'\n", path );
-
-
-    init : Init = null;
-    appDLL := LoadLibraryA( "replr.dll" );
-    if appDLL
-    {
-        // Cast to void* first to avoid MSVC whining
-        init = cast(Init)GetProcAddress( appDLL, "Init" );
-        print( "Found 'Init' func at %\n", init );
-    }
-    result := init();
-    print( "DLL returned: %\n", result );
-
 
     #if OS == .WINDOWS
     {
@@ -85,9 +72,45 @@ main :: ()
     windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
     //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
 
+    app : HMODULE;
+    app_modtime : Apollo_Time;
+    app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
+    temp_dll_ord := 1;
+
     quit := false;
     while !quit
     {
+        // Check whether we need to load app entry points from the DLL
+        modtime, size, modtime_ok := file_modtime_and_size( app_dll_path );
+        if modtime_ok && modtime > app_modtime
+        {
+            // Make a copy of the DLL first so we don't lock it when loading it
+            temp_dll_name := tprint( "%.temp.%.dll", APP_DLL_NAME, temp_dll_ord );
+            temp_dll_path := tprint( "bin/%", temp_dll_name );
+
+            if copy_file( app_dll_path, temp_dll_path, silent = true )
+            {
+                old_app := app;
+                print( "Found new app dll with modtime %\n", modtime );
+                print( "Loading app code from '%'..\n", temp_dll_path );
+                app = LoadLibraryA( temp_dll_path.data );
+                if app
+                {
+                    test = cast(type_of(test))GetProcAddress( app, "Test" );
+                    //print( "Found 'Test' func at %\n", test );
+
+                    FreeLibrary( old_app );
+                    app_modtime = modtime;
+                    temp_dll_ord += 1;
+                }
+                else
+                {
+                    error, desc := get_error_value_and_string();
+                    print( "App code loading FAILED (%)!\n", desc );
+                }
+            }
+        }
+
         update_window_events();
 
         for get_window_resizes()
@@ -125,10 +148,8 @@ main :: ()
         glState.windowWidth = cast(float)windowWidth;  
         glState.windowHeight = cast(float)windowHeight;
 
-        OpenGLDrawFSQTest( *glState );
-        Simp.prepare_text( mainFont, "Hello, Sailor!" );
-        Simp.generate_quads_for_prepared_text( mainFont, 100, 100, 0 );
-        OpenGLDrawFontQuads( *glState, mainFont ); //, .{ 0, 0, 0, 1 } );
+        text := test();
+        OpenGLDrawFSQTest( *glState, mainFont, text );
 
         Swap( mainWindow );
     }

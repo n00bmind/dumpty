@@ -147,7 +147,7 @@ OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color :=
 }
 
 //prevOrthoMatrix: Matrix4;
-OpenGLDrawFSQTest :: ( state: *OpenGLState )
+OpenGLDrawFSQTest :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, text: string )
 {
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
@@ -219,9 +219,13 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
     {
         it.color = .{ 0.15, 0.15, 0.2, 1 };
     }
-    glBufferData( GL_ARRAY_BUFFER, verts.count * size_of(TextVertex), verts.data,
-                  GL_STREAM_DRAW );
+    glBufferData( GL_ARRAY_BUFFER, verts.count * size_of(TextVertex), verts.data, GL_STREAM_DRAW );
     glDrawElements( GL_TRIANGLES, indices.count, GL_UNSIGNED_INT, null );
+
+    // Draw some text
+    Simp.prepare_text( font, text );
+    Simp.generate_quads_for_prepared_text( font, 100, 100, 0 );
+    OpenGLDrawFontQuads( state, font ); //, .{ 0, 0, 0, 1 } );
 }
 
 #scope_file
