@@ -13,6 +13,10 @@ build :: ()
     path = get_working_directory();
     print( "Working directory for 'build' metaprogram: '%'\n", path );
 
+    // Right now it seems there's no way to just pass a path string directly
+    loc: Source_Code_Location;
+    loc.fully_pathed_filename = path;
+
     global_options := get_build_options();
     global_options.output_path = "bin/";
     global_options.intermediate_path = "bin/";
@@ -24,7 +28,7 @@ build :: ()
         options := global_options;
         options.output_type = .DYNAMIC_LIBRARY;
         options.output_executable_name = "replr";
-        set_build_options( options, w );
+        set_build_options( options, w, loc );
 
         add_build_file( "app.jai", w );
     }
@@ -35,7 +39,7 @@ build :: ()
         options := global_options;
         options.output_type = .EXECUTABLE;
         options.output_executable_name = "run";
-        set_build_options( options, w );
+        set_build_options( options, w, loc );
         // add_build_file appears to not be relative to the CWD
         add_build_file( "first.jai", w );
     }

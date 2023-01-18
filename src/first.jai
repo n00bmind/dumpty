@@ -2,6 +2,7 @@
 
 #scope_file
 
+#import "File";
 #import "String";
 #import "System";
 #import "Window_Creation";
@@ -9,7 +10,7 @@
 #import "File_Utilities";
 // TODO How to enable this?
 #import "GL"; //( DUMP_GL_ERRORS = true );
-Simp  :: #import "Simp";
+#import "freetype-2.12.1";
 
 #if OS == .WINDOWS {
     #import "Windows";
@@ -20,7 +21,6 @@ Simp  :: #import "Simp";
 // TODO Add to autosaved state & configuration
 INIT_WINDOW_WIDTH  :: 900;
 //WINDOW_HEIGHT :: 720;
-FONT_SIZE :: 24;
 APP_DLL_NAME :: "replr";
 
 mainWindow: Window_Type;
@@ -61,21 +61,80 @@ main :: ()
     if( !OpenGLInit( *glState, mainWindow ) )
         exit( 1 );
 
-    pixelHeight := FONT_SIZE;
-    mainFont := Simp.get_font_at_size("data/fonts", "consolas_nf_regular.ttf", pixelHeight );
-    if( mainFont == null )
+    windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
+    //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
+
+
+    ft: FT_Library;
+
+    error := FT_Init_FreeType( *ft );
+    if error
+    {
+        print( "Failed initialising FreeType lib!" );
+        exit( 1 );
+    }
+
+    fontData, success := read_entire_file( "data/fonts/consolas_nf_regular.ttf" );
+    if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
         exit( 1 );
     }
 
-    windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
-    //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
+    face: FT_Face;
+    error = FT_New_Memory_Face( ft, fontData.data, cast(s32) fontData.count, 0, *face );
+    if error
+    {
+        print( "Failed parsing font 'data/fonts/consolas_nf_regular.ttf'\n" );
+        exit( 1 );
+    }
+
+    error = FT_Set_Pixel_Sizes( face, 0, 58 );
+    assert(!error);
+
+    // Load glyphs for ASCII
+    faceAdvance : float;
+    glyphs : [126-32+1] Glyph;
+    for 32..126
+    {
+        error = FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
+        if error
+        {
+            print( "Failed to load glyph for character %\n", it );
+            continue;
+        }
+
+        texture : u32;
+        glGenTextures( 1, *texture );
+        glBindTexture( GL_TEXTURE_2D, texture );
+        // TODO Should probably check pixel_mode in the bitmap
+        glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, 
+                      face.glyph.bitmap.width, face.glyph.bitmap.rows,
+                      0, GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+        
+        advance := face.glyph.advance.x / 64.0;
+        if faceAdvance == 0
+            faceAdvance = advance;
+        assert( advance == faceAdvance, "Font has non-uniform advance" );
+
+        glyphs[ it - 32 ] = .{
+            .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows },
+            .{ face.glyph.bitmap_left, face.glyph.bitmap_top },
+            advance,
+            texture,
+        };
+
+        //print( "Loaded character %: %\n", it, glyphs[ it - 32 ] );
+    }
+
+    FT_Done_Face( face );
+    FT_Done_FreeType( ft );
+
 
     app : HMODULE;
     app_modtime : Apollo_Time;
     app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
-    temp_dll_ord := 1;
+    temp_dll_ord := 0;
 
     quit := false;
     while !quit
@@ -101,7 +160,7 @@ main :: ()
 
                     FreeLibrary( old_app );
                     app_modtime = modtime;
-                    temp_dll_ord += 1;
+                    temp_dll_ord = 1 - temp_dll_ord;
                 }
                 else
                 {
@@ -149,7 +208,9 @@ main :: ()
         glState.windowHeight = cast(float)windowHeight;
 
         text := test();
-        OpenGLDrawFSQTest( *glState, mainFont, text );
+        OpenGLDrawFSQTest( *glState, text );
+
+        OpenGLDrawTextWithGlyphs( *glState, " !\"#$%&'()*+,-./", 100, 700, glyphs );
 
         Swap( mainWindow );
     }

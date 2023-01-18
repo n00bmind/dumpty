@@ -6,6 +6,7 @@ OpenGLState :: struct
     indexBuffer : GLuint;
 
     textShader : Shader;
+    testTextShader : Shader;
 
     white : u32;
     whiteTextureHandle : GLuint;
@@ -41,7 +42,9 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 
     DumpGLErrors( "context" );
 
-    shaderOk := BuildShaderProgram( *state.textShader, SHADER_TEXT );
+    shaderOk := BuildShaderProgram( *state.textShader, TEXT_SHADER );
+    assert( shaderOk );
+    shaderOk = BuildShaderProgram( *state.testTextShader, TEST_TEXT_SHADER );
     assert( shaderOk );
 
     // Create a white texture
@@ -62,14 +65,92 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     glEnableVertexAttribArray( xx state.textShader.positionAttrib );
     glEnableVertexAttribArray( xx state.textShader.colorAttrib );
     glEnableVertexAttribArray( xx state.textShader.uvAttrib );
+
     textVertex: *TextVertex: null;
     glVertexAttribPointer( xx state.textShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
     glVertexAttribPointer( xx state.textShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
     glVertexAttribPointer( xx state.textShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
 
+    glUseProgram( state.testTextShader.program );    
+
+    // Enable default text shader's attributes
+    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
+    glEnableVertexAttribArray( xx state.testTextShader.positionAttrib );
+    glEnableVertexAttribArray( xx state.testTextShader.colorAttrib );
+    glEnableVertexAttribArray( xx state.testTextShader.uvAttrib );
+
+    glVertexAttribPointer( xx state.testTextShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
+    glVertexAttribPointer( xx state.testTextShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
+    glVertexAttribPointer( xx state.testTextShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
+
     DumpGLErrors( "shader" );
 
     return true;
+}
+
+v2i :: struct
+{
+    x, y : s32;
+}
+
+Glyph :: struct
+{
+    size : v2i;
+    bearing : v2i;
+    advance : float;
+    texture : u32;
+}
+
+OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, x: float, y: float, glyphs: [] Glyph )
+{
+    DrawLetterQuad :: ( character: u8, x: float, y: float, glyph: Glyph, vertices: *[6] TextVertex )
+    {
+        white :: #run make_vector4( 1, 1, 1, 1 );
+        red :: #run make_vector4( 1, 0, 0, 1 );
+        green :: #run make_vector4( 0, 1, 0, 1 );
+        blue :: #run make_vector4( 0, 0, 1, 1 );
+
+        w := glyph.size.x;
+        h := glyph.size.y;
+
+        (<<vertices)[0] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ 0, 0 } };
+        (<<vertices)[1] = .{ position = make_vector3( x, y, 0 ), color = red, uv = .{ 0, 1 } };
+        (<<vertices)[2] = .{ position = make_vector3( x + w, y, 0 ), color = green, uv = .{ 1, 1 } };
+
+        (<<vertices)[3] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ 0, 0 } };
+        (<<vertices)[4] = .{ position = make_vector3( x + w, y, 0 ), color = green, uv = .{ 1, 1 } };
+        (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = blue, uv = .{ 1, 0 } };
+    }
+
+    vertices : [6] TextVertex;
+
+    glActiveTexture( GL_TEXTURE0 );
+    glUseProgram( state.textShader.program );    
+    glUniform1i( state.textShader.textSamplerUni, 0 );
+
+    projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
+    glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
+
+    c := text.data;
+    while c < text.data + text.count
+    {
+        glyph := *glyphs[ <<c - 32 ];
+        glBindTexture( GL_TEXTURE_2D, glyph.texture );  // Bind handle to slot 0.
+        glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+        glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+        // TODO Not sure whether we ever want any filtering or not
+        glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+        glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+
+        DrawLetterQuad( <<c, x, y, <<glyph, *vertices );
+
+        glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
+        glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
+        glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
+
+        x += glyphs[0].advance;
+        c += 1;
+    }
 }
 
 OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color := Vector4.{1, 1, 1, 1} )
@@ -133,21 +214,20 @@ OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color :=
             //glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 0 );
             glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
             glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-            glUniform1i( state.textShader.textSamplerUni, 0 );
+            glUniform1i( state.testTextShader.textSamplerUni, 0 );
         }
 
         draw_letter_quad( font, quad, color, state.windowHeight, *vertices );
     }
 
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data,
-                  GL_STREAM_DRAW );
-
+    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
     glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 }
 
+testFont: *Simp.Dynamic_Font;
 //prevOrthoMatrix: Matrix4;
-OpenGLDrawFSQTest :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, text: string )
+OpenGLDrawFSQTest :: ( state: *OpenGLState, text: string )
 {
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
@@ -155,9 +235,7 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, text: stri
 
     glViewport( 0, 0, xx fbWidth, xx fbHeight );
 
-    projection := orthographic_projection_matrix( 0,
-                                                  state.windowWidth, state.windowHeight,
-                                                  0, 0, 1 );
+    projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     //if( projection != prevOrthoMatrix )
     //{
         //print( "Orthographic matrix: \n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n%\t%\t%\t%\n",
@@ -167,12 +245,12 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, text: stri
                //projection._41, projection._42, projection._43, projection._44 );
         //prevOrthoMatrix = projection;
     //}
-    glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
+    glUseProgram( state.testTextShader.program );    
+    glUniformMatrix4fv( state.testTextShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
-    // TODO Probably not needed per frame?
     glActiveTexture( GL_TEXTURE0 );
     glBindTexture( GL_TEXTURE_2D, state.whiteTextureHandle );  // Bind handle to slot 0.
-    glUniform1i( state.textShader.textSamplerUni, 0 );
+    glUniform1i( state.testTextShader.textSamplerUni, 0 );
 
     DumpGLErrors( "frame setup" );
 
@@ -223,9 +301,19 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, text: stri
     glDrawElements( GL_TRIANGLES, indices.count, GL_UNSIGNED_INT, null );
 
     // Draw some text
-    Simp.prepare_text( font, text );
-    Simp.generate_quads_for_prepared_text( font, 100, 100, 0 );
-    OpenGLDrawFontQuads( state, font ); //, .{ 0, 0, 0, 1 } );
+    if !testFont
+    {
+        testFont = Simp.get_font_at_size("data/fonts", "consolas_nf_regular.ttf", 58 );
+        if( testFont == null )
+        {
+            print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
+            exit( 1 );
+        }
+    }
+
+    Simp.convert_to_temporary_glyphs( testFont, text, 0 );
+    Simp.generate_quads_for_prepared_text( testFont, 100, 500, 0 );
+    OpenGLDrawFontQuads( state, testFont ); //, .{ 0, 0, 0, 1 } );
 }
 
 #scope_file
@@ -240,7 +328,42 @@ TextVertex :: struct
     uv:         Vector2;
 }
 
-SHADER_TEXT :: #string END
+TEXT_SHADER :: #string END
+
+OUT_IN vec2 TextureCoords;
+OUT_IN vec4 iterated_color;
+
+
+#ifdef VERTEX_SHADER
+in vec4 vert_position;
+in vec4 vert_color;
+in vec2 vert_uv0;
+
+uniform mat4 projection;
+
+void main() {
+    gl_Position     = projection * vec4(vert_position.xy, 0.0, 1.0);
+    iterated_color  = vert_color;
+    TextureCoords   = vert_uv0;
+}
+#endif // VERTEX_SHADER
+
+
+#ifdef FRAGMENT_SHADER
+out vec4 color;
+
+uniform sampler2D text_sampler;
+uniform vec4 text_color;
+
+void main () {
+    vec4 sample = texture(text_sampler, TextureCoords);
+    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
+    if (sample.a < .3)  discard;
+}
+#endif // FRAGMENT_SHADER
+END
+
+TEST_TEXT_SHADER :: #string END
 
 OUT_IN vec2 TextureCoords;
 OUT_IN vec4 iterated_color;
@@ -346,7 +469,7 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
     glDeleteShader( vShader );
     glDeleteShader( fShader );
 
-    shader.program     = program;
+    shader.program        = program;
     shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
     shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
     shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
