@@ -92,44 +92,6 @@ main :: ()
     error = FT_Set_Pixel_Sizes( face, 0, 58 );
     assert(!error);
 
-    // Load glyphs for ASCII
-    faceAdvance : float;
-    glyphs : [126-32+1] Glyph;
-    for 32..126
-    {
-        error = FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
-        if error
-        {
-            print( "Failed to load glyph for character %\n", it );
-            continue;
-        }
-
-        texture : u32;
-        glGenTextures( 1, *texture );
-        glBindTexture( GL_TEXTURE_2D, texture );
-        // TODO Should probably check pixel_mode in the bitmap
-        glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, 
-                      face.glyph.bitmap.width, face.glyph.bitmap.rows,
-                      0, GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
-        
-        advance := face.glyph.advance.x / 64.0;
-        if faceAdvance == 0
-            faceAdvance = advance;
-        assert( advance == faceAdvance, "Font has non-uniform advance" );
-
-        glyphs[ it - 32 ] = .{
-            .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows },
-            .{ face.glyph.bitmap_left, face.glyph.bitmap_top },
-            advance,
-            texture,
-        };
-
-        //print( "Loaded character %: %\n", it, glyphs[ it - 32 ] );
-    }
-
-    FT_Done_Face( face );
-    FT_Done_FreeType( ft );
-
 
     app : HMODULE;
     app_modtime : Apollo_Time;
@@ -210,11 +172,15 @@ main :: ()
         text := test();
         OpenGLDrawFSQTest( *glState, text );
 
-        OpenGLDrawTextWithGlyphs( *glState, " !\"#$%&'()*+,-./", 100, 700, glyphs );
+        OpenGLDrawTextWithGlyphs( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, face );
+        OpenGLDrawTextWithGlyphs( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, face );
+        OpenGLDrawTextWithGlyphs( *glState, " !\"#$%&'()*+,-./", 100, 700, face );
 
         Swap( mainWindow );
     }
-    
+
+    FT_Done_Face( face );
+    FT_Done_FreeType( ft );
     exit( 0 );
 }
 
