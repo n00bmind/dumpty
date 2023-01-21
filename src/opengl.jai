@@ -88,20 +88,10 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     return true;
 }
 
-v2i :: struct
-{
-    x, y : s32;
-}
 
-Glyph :: struct
-{
-    size : v2i;
-    bearing : v2i;
-    advance : float;
-    texture : u32;
-}
+TEX_ATLAS_SIZE :: 1024;
 
-OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: FT_Face )
+OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: FT_Face )
 {
     DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, vertices: *[6] TextVertex )
     {
@@ -116,24 +106,36 @@ OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, xBase: float, y
         w := glyph.size.x;
         h := glyph.size.y;
 
-        (<<vertices)[1] = .{ position = make_vector3( x, y, 0 ), color = white, uv = .{ 0, 0 } };
-        (<<vertices)[0] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ 0, 1 } };
-        (<<vertices)[2] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ 1, 0 } };
+        s := cast(float) TEX_ATLAS_SIZE;
+        u0 := glyph.offset.x / s;
+        v0 := glyph.offset.y / s;
+        u1 := (glyph.offset.x + w) / s;
+        v1 := (glyph.offset.y + h) / s;
 
-        (<<vertices)[4] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ 1, 0 } };
-        (<<vertices)[3] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ 0, 1 } };
-        (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = white, uv = .{ 1, 1 } };
+        (<<vertices)[1] = .{ position = make_vector3( x, y, 0 ), color = white, uv = .{ u0, v0 } };
+        (<<vertices)[0] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ u0, v1 } };
+        (<<vertices)[2] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ u1, v0 } };
+
+        (<<vertices)[4] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ u1, v0 } };
+        (<<vertices)[3] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ u0, v1 } };
+        (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = white, uv = .{ u1, v1 } };
     }
 
-    // TODO Compare by some kind of id?
+    // FIXME Compare by some kind of id?
     if testLoadedFace.face != *face
     {
         testLoadedFace.face = *face;
+        testLoadedFace.lineHeight = face.size.metrics.height / 64.0;
 
-        // NOTE This is required for arbitrary-sized textures, will not be needed for a "normal" 1024 (or whatever) atlas
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glGenTextures( 1, *testLoadedFace.texture );
+        glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );
+        // TODO Should probably check pixel_mode in the bitmap
+        // TODO According to https://freetype.org/freetype2/docs/tutorial/step1.html this needs to be rendered with gamma correction
+        glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, TEX_ATLAS_SIZE, TEX_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, null );
 
         // Load glyphs for ASCII
+        xoffset, yoffset : s32 = 0;
+        maxHeight : s32 = 0;
         for 32..126
         {
             error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
@@ -143,28 +145,36 @@ OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, xBase: float, y
                 continue;
             }
 
-            texture : u32;
-            glGenTextures( 1, *texture );
-            glBindTexture( GL_TEXTURE_2D, texture );
-            // TODO Should probably check pixel_mode in the bitmap
-            glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, 
-                          face.glyph.bitmap.width, face.glyph.bitmap.rows,
-                          0, GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, face.glyph.bitmap.width, face.glyph.bitmap.rows,
+                             GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
 
             advance := face.glyph.advance.x / 64.0;
             if testLoadedFace.advance == 0
+            {
                 testLoadedFace.advance = advance;
+                print( "Font advance is %\n", testLoadedFace.advance );
+            }
             assert( advance == testLoadedFace.advance, "Font has non-uniform advance" );
 
-            testLoadedFace.glyphs[ it - 32 ] =
-            .{
-                .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows },
-                .{ face.glyph.bitmap_left, face.glyph.bitmap_top },
-                advance,
-                texture,
-            };
+            if maxHeight < xx face.glyph.bitmap.rows
+                maxHeight = xx face.glyph.bitmap.rows;
 
-            //print( "Loaded character %: %\n", it, testLoadedFace.glyphs[ it - 32 ] );
+            g := *(testLoadedFace.glyphs[ it - 32 ]);
+            g.offset  = .{ xoffset, yoffset };
+            g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
+            g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
+
+            print( "Loaded character %: %\n", it, testLoadedFace.glyphs[ it - 32 ] );
+
+            xoffset += xx face.glyph.bitmap.width;
+            // Conservatively break the line when one more full-width glyph won't fit
+            if xoffset + testLoadedFace.advance > TEX_ATLAS_SIZE
+            {
+                yoffset += maxHeight;
+                assert( yoffset + testLoadedFace.lineHeight <= TEX_ATLAS_SIZE );
+                maxHeight = 0;
+                xoffset = 0;
+            }
         }
     }
 
@@ -181,10 +191,9 @@ OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, xBase: float, y
     while c < text.data + text.count
     {
         glyph := *testLoadedFace.glyphs[ <<c - 32 ];
-        glBindTexture( GL_TEXTURE_2D, glyph.texture );  // Bind handle to slot 0.
+        glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );  // Bind handle to slot 0.
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-        // TODO Not sure whether we ever want any filtering or not
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
@@ -194,11 +203,47 @@ OpenGLDrawTextWithGlyphs :: ( state: *OpenGLState, text: string, xBase: float, y
         glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
         glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 
-        xBase += glyph.advance;
+        xBase += testLoadedFace.advance;
         c += 1;
     }
 }
 
+// Font must be loaded already
+OpenGLDrawAtlas :: ( state: *OpenGLState )
+{
+    glUseProgram( state.textShader.program );    
+    glUniform1i( state.textShader.textSamplerUni, 0 );
+
+    projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
+    glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
+
+    glActiveTexture( GL_TEXTURE0 );
+    glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );  // Bind handle to slot 0.
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+
+    vertices : [6] TextVertex;
+    white :: #run make_vector4( 1, 1, 1, 1 );
+    red :: #run make_vector4( 1, 0, 0, 1 );
+    green :: #run make_vector4( 0, 1, 0, 1 );
+    blue :: #run make_vector4( 0, 0, 1, 1 );
+
+    vertices[1] = .{ position = make_vector3( 0, 0, 0 ), color = white, uv = .{ 0, 0 } };
+    vertices[0] = .{ position = make_vector3( 0, 1024, 0 ), color = white, uv = .{ 0, 1 } };
+    vertices[2] = .{ position = make_vector3( 1024, 0, 0 ), color = white, uv = .{ 1, 0 } };
+
+    vertices[4] = .{ position = make_vector3( 1024, 0, 0 ), color = white, uv = .{ 1, 0 } };
+    vertices[3] = .{ position = make_vector3( 0, 1024, 0 ), color = white, uv = .{ 0, 1 } };
+    vertices[5] = .{ position = make_vector3( 1024, 1024, 0 ), color = white, uv = .{ 1, 1 } };
+
+    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
+    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
+    glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
+}
+
+// This uses Simp fonts just for testing 
 OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color := Vector4.{1, 1, 1, 1} )
 {
     vertices : [..] TextVertex;
@@ -374,11 +419,25 @@ TextVertex :: struct
     uv:         Vector2;
 }
 
+v2i :: struct
+{
+    x, y : s32;
+}
+
+Glyph :: struct
+{
+    offset : v2i;
+    size : v2i;
+    bearing : v2i;
+}
+
 LoadedFace :: struct
 {
-    face : *FT_Face;
-    advance : float;
-    glyphs : [126-32+1] Glyph;
+    glyphs     : [126-32+1] Glyph;
+    face       : *FT_Face;
+    advance    : float;
+    lineHeight : float;
+    texture    : u32;
 }
 testLoadedFace : LoadedFace;
 

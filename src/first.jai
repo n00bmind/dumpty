@@ -172,9 +172,11 @@ main :: ()
         text := test();
         OpenGLDrawFSQTest( *glState, text );
 
-        OpenGLDrawTextWithGlyphs( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, face );
-        OpenGLDrawTextWithGlyphs( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, face );
-        OpenGLDrawTextWithGlyphs( *glState, " !\"#$%&'()*+,-./", 100, 700, face );
+        OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, face );
+        OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, face );
+        OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, face );
+
+        OpenGLDrawAtlas( *glState );
 
         Swap( mainWindow );
     }
