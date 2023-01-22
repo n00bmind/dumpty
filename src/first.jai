@@ -28,6 +28,23 @@ glState: OpenGLState;
 
 test : () -> string = null;
 
+RendererCell :: struct
+{
+    glyphIndex : u32;
+    // NOTE Since we likely won't use the alpha on these, we could pack some flags in there
+    foregroundColor : u32;
+    backgroundColor : u32;
+
+    _padding : u32;
+}
+
+RendererBuffer :: struct
+{
+    cells : [] RendererCell;
+    xDim, yDim : u32;
+    //firstLineY : u32;
+}
+
 #program_export
 
 NvOptimusEnablement : DWORD = 0x01;
@@ -65,32 +82,25 @@ main :: ()
     //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
 
 
-    ft: FT_Library;
-
-    error := FT_Init_FreeType( *ft );
-    if error
-    {
-        print( "Failed initialising FreeType lib!" );
-        exit( 1 );
-    }
-
-    fontData, success := read_entire_file( "data/fonts/consolas_nf_regular.ttf" );
+    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 58 );
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
         exit( 1 );
     }
 
-    face: FT_Face;
-    error = FT_New_Memory_Face( ft, fontData.data, cast(s32) fontData.count, 0, *face );
-    if error
+    // TODO 
+    termCells : RendererBuffer;
+    termCells.xDim = 10;
+    termCells.yDim = 10;
+    cells, _ := NewArray( termCells.xDim * termCells.yDim, RendererCell );
+    for * cells
     {
-        print( "Failed parsing font 'data/fonts/consolas_nf_regular.ttf'\n" );
-        exit( 1 );
+        it.glyphIndex = 65;
+        it.foregroundColor = 0xFFFFFFFF;
+        it.backgroundColor = 0;
     }
-
-    error = FT_Set_Pixel_Sizes( face, 0, 58 );
-    assert(!error);
+    termCells.cells = cells;
 
 
     app : HMODULE;
@@ -170,19 +180,17 @@ main :: ()
         glState.windowHeight = cast(float)windowHeight;
 
         text := test();
-        OpenGLDrawFSQTest( *glState, text );
+        OpenGLDrawFSQTest( *glState );
 
-        OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, face );
-        OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, face );
-        OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, face );
+        OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, loadedFace );
+        OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, loadedFace );
+        OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, loadedFace );
 
-        OpenGLDrawAtlas( *glState );
+        OpenGLDrawAtlas( *glState, loadedFace );
 
         Swap( mainWindow );
     }
 
-    FT_Done_Face( face );
-    FT_Done_FreeType( ft );
     exit( 0 );
 }
 

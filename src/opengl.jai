@@ -5,7 +5,7 @@ OpenGLState :: struct
     vertexBuffer : GLuint;
     indexBuffer : GLuint;
 
-    textShader : Shader;
+    gridShader : Shader;
     testShader : Shader;
 
     white : u32;
@@ -42,7 +42,7 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 
     DumpGLErrors( "context" );
 
-    shaderOk := BuildShaderProgram( *state.textShader, TEXT_SHADER );
+    shaderOk := BuildShaderProgram( *state.gridShader, GRID_SHADER );
     assert( shaderOk );
     shaderOk = BuildShaderProgram( *state.testShader, TEST_SHADER );
     assert( shaderOk );
@@ -58,18 +58,18 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     glDisable( GL_CULL_FACE );
     glDisable( GL_DEPTH_TEST );
 
-    glUseProgram( state.textShader.program );    
+    glUseProgram( state.gridShader.program );    
 
     // Enable default text shader's attributes
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glEnableVertexAttribArray( xx state.textShader.positionAttrib );
-    glEnableVertexAttribArray( xx state.textShader.colorAttrib );
-    glEnableVertexAttribArray( xx state.textShader.uvAttrib );
+    glEnableVertexAttribArray( xx state.gridShader.positionAttrib );
+    glEnableVertexAttribArray( xx state.gridShader.colorAttrib );
+    glEnableVertexAttribArray( xx state.gridShader.uvAttrib );
 
     textVertex: *TextVertex: null;
-    glVertexAttribPointer( xx state.textShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
-    glVertexAttribPointer( xx state.textShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
-    glVertexAttribPointer( xx state.textShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
+    glVertexAttribPointer( xx state.gridShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
+    glVertexAttribPointer( xx state.gridShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
+    glVertexAttribPointer( xx state.gridShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
 
     glUseProgram( state.testShader.program );    
 
@@ -91,7 +91,102 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 
 TEX_ATLAS_SIZE :: 1024;
 
-OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: FT_Face )
+// Loads a font from disk using Freetype and creates an atlas for it
+OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
+{
+    ft: FT_Library;
+    error := FT_Init_FreeType( *ft );
+    if error
+    {
+        print( "Failed initialising FreeType lib!" );
+        return .{}, false;
+    }
+
+    fontData, success := read_entire_file( path );
+    if !success
+    {
+        print( "Failed loading font '%'\n", path );
+        return .{}, false;
+    }
+
+    face: FT_Face;
+    error = FT_New_Memory_Face( ft, fontData.data, cast(s32) fontData.count, 0, *face );
+    if error
+    {
+        print( "Failed parsing font '%'\n", path );
+        return .{}, false;
+    }
+
+    error = FT_Set_Pixel_Sizes( face, 0, xx pixelHeight );
+    assert(!error);
+
+    
+    loadedFace: LoadedFace;
+    loadedFace.face = *face;
+    loadedFace.lineHeight = face.size.metrics.height / 64.0;
+
+    // TODO Seems to still be necessary even with a "standard" 1024x1024 texture size?
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    glGenTextures( 1, *loadedFace.texture );
+    glBindTexture( GL_TEXTURE_2D, loadedFace.texture );
+    // TODO Should probably check pixel_mode in the bitmap
+    // TODO According to https://freetype.org/freetype2/docs/tutorial/step1.html this needs to be rendered with gamma correction
+    glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, TEX_ATLAS_SIZE, TEX_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, null );
+
+    // Load glyphs for ASCII
+    xoffset, yoffset : s32 = 0;
+    maxHeight : s32 = 0;
+    for 32..126
+    {
+        error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
+        if error
+        {
+            print( "Failed to load glyph for character %\n", it );
+            continue;
+        }
+
+        glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, face.glyph.bitmap.width, face.glyph.bitmap.rows,
+                            GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+
+        advance := face.glyph.advance.x / 64.0;
+        if loadedFace.advance == 0
+        {
+            loadedFace.advance = advance;
+            print( "Font advance is %\n", loadedFace.advance );
+        }
+        assert( advance == loadedFace.advance, "Font has non-uniform advance" );
+
+        if maxHeight < xx face.glyph.bitmap.rows
+            maxHeight = xx face.glyph.bitmap.rows;
+
+        g := *(loadedFace.glyphs[ it - 32 ]);
+        g.offset  = .{ xoffset, yoffset };
+        g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
+        g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
+
+        //print( "Loaded character %: %\n", it, loadedFace.glyphs[ it - 32 ] );
+
+        xoffset += xx face.glyph.bitmap.width;
+        // Conservatively break the line when one more full-width glyph won't fit
+        if xoffset + loadedFace.advance > TEX_ATLAS_SIZE
+        {
+            yoffset += maxHeight;
+            assert( yoffset + loadedFace.lineHeight <= TEX_ATLAS_SIZE );
+            maxHeight = 0;
+            xoffset = 0;
+        }
+    }
+
+    FT_Done_Face( face );
+    FT_Done_FreeType( ft );
+
+    return loadedFace, true;
+}
+
+// For testing
+// Draw a text string with the given font by issuing a separate quad per glyph
+OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: LoadedFace )
 {
     DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, vertices: *[6] TextVertex )
     {
@@ -121,80 +216,31 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = white, uv = .{ u1, v1 } };
     }
 
-    // TODO Seems to still be necessary even with a "standard" 1024x1024 texture size?
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    // FIXME Compare by some kind of id?
-    if testLoadedFace.face != *face
-    {
-        testLoadedFace.face = *face;
-        testLoadedFace.lineHeight = face.size.metrics.height / 64.0;
-
-        glGenTextures( 1, *testLoadedFace.texture );
-        glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );
-        // TODO Should probably check pixel_mode in the bitmap
-        // TODO According to https://freetype.org/freetype2/docs/tutorial/step1.html this needs to be rendered with gamma correction
-        glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, TEX_ATLAS_SIZE, TEX_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, null );
-
-        // Load glyphs for ASCII
-        xoffset, yoffset : s32 = 0;
-        maxHeight : s32 = 0;
-        for 32..126
-        {
-            error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
-            if error
-            {
-                print( "Failed to load glyph for character %\n", it );
-                continue;
-            }
-
-            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, face.glyph.bitmap.width, face.glyph.bitmap.rows,
-                             GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
-
-            advance := face.glyph.advance.x / 64.0;
-            if testLoadedFace.advance == 0
-            {
-                testLoadedFace.advance = advance;
-                print( "Font advance is %\n", testLoadedFace.advance );
-            }
-            assert( advance == testLoadedFace.advance, "Font has non-uniform advance" );
-
-            if maxHeight < xx face.glyph.bitmap.rows
-                maxHeight = xx face.glyph.bitmap.rows;
-
-            g := *(testLoadedFace.glyphs[ it - 32 ]);
-            g.offset  = .{ xoffset, yoffset };
-            g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
-            g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
-
-            //print( "Loaded character %: %\n", it, testLoadedFace.glyphs[ it - 32 ] );
-
-            xoffset += xx face.glyph.bitmap.width;
-            // Conservatively break the line when one more full-width glyph won't fit
-            if xoffset + testLoadedFace.advance > TEX_ATLAS_SIZE
-            {
-                yoffset += maxHeight;
-                assert( yoffset + testLoadedFace.lineHeight <= TEX_ATLAS_SIZE );
-                maxHeight = 0;
-                xoffset = 0;
-            }
-        }
-    }
 
     vertices : [6] TextVertex;
 
     glActiveTexture( GL_TEXTURE0 );
-    glUseProgram( state.textShader.program );    
-    glUniform1i( state.textShader.textSamplerUni, 0 );
+    glUseProgram( state.testShader.program );    
+    glUniform1i( state.testShader.textSamplerUni, 0 );
 
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
-    glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
+    glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
+
+    // Uniform buffer object for cells
+    //cellsBlockUni : GLuint = glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
+    //glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
+
+    //GLuint uboLights;
+    //glGenBuffers(1, &uboLights);
+    //glBindBuffer(GL_UNIFORM_BUFFER, uboLights);
+    //glBufferData(GL_UNIFORM_BUFFER, sizeof(lights), NULL, GL_DYNAMIC_DRAW);
+    //glBindBufferBase(GL_UNIFORM_BUFFER, cellsBlockUni, uboLights);
 
     c := text.data;
     while c < text.data + text.count
     {
-        glyph := *testLoadedFace.glyphs[ <<c - 32 ];
-        glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );  // Bind handle to slot 0.
+        glyph := *face.glyphs[ <<c - 32 ];
+        glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
@@ -206,22 +252,24 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
         glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 
-        xBase += testLoadedFace.advance;
+        xBase += face.advance;
         c += 1;
     }
 }
 
+// For testing
+// Draw atlas of the given font by issuing a quad of the same size as the full texture
 // Font must be loaded already
-OpenGLDrawAtlas :: ( state: *OpenGLState )
+OpenGLDrawAtlas :: ( state: *OpenGLState, face: LoadedFace )
 {
-    glUseProgram( state.textShader.program );    
-    glUniform1i( state.textShader.textSamplerUni, 0 );
+    glUseProgram( state.testShader.program );    
+    glUniform1i( state.testShader.textSamplerUni, 0 );
 
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
-    glUniformMatrix4fv( state.textShader.projectionUni, 1, GL_TRUE, *projection._11 );
+    glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_2D, testLoadedFace.texture );  // Bind handle to slot 0.
+    glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
@@ -246,8 +294,10 @@ OpenGLDrawAtlas :: ( state: *OpenGLState )
     glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 }
 
+// For testing
+// Draw an apron to test the window borders and other stuff
 //prevOrthoMatrix: Matrix4;
-OpenGLDrawFSQTest :: ( state: *OpenGLState, text: string )
+OpenGLDrawFSQTest :: ( state: *OpenGLState )
 {
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
@@ -353,10 +403,9 @@ LoadedFace :: struct
     lineHeight : float;
     texture    : u32;
 }
-testLoadedFace : LoadedFace;
 
 
-TEXT_SHADER :: #string END
+GRID_SHADER :: #string END
 
 OUT_IN vec2 TextureCoords;
 OUT_IN vec4 iterated_color;
@@ -382,6 +431,18 @@ out vec4 color;
 
 uniform sampler2D text_sampler;
 uniform vec4 text_color;
+
+struct Cell {
+    uint glyphIndex;
+    uint foregroundColor;
+    uint backgroundColor;
+    uint _padding;
+};
+
+// TODO This seems to be near the maximum for the GTX. Test out on old cards!!
+layout (std140) uniform CellsBlock {
+    Cell cells[4096];
+};
 
 void main () {
     vec4 sample = texture(text_sampler, TextureCoords);
@@ -420,7 +481,7 @@ uniform vec4 text_color;
 
 void main () {
     vec4 sample = texture(text_sampler, TextureCoords);
-    color = vec4(iterated_color.xyz, sample.a * iterated_color.a); // text_color * sample;
+    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
     if (sample.a < .3)  discard;
 }
 #endif // FRAGMENT_SHADER
@@ -452,8 +513,7 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
         {
             log_data: [LOG_BUFFER_SIZE] u8;
             glGetShaderInfoLog( shaderObj, log_data.count, null, log_data.data );
-            // TODO 
-            //log( "%", to_string( log_data.data ), flags=.ERROR );
+            print( "%", to_string( log_data.data ) );
             return 0;
         }
 
@@ -489,8 +549,7 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
     {
         log_data: [LOG_BUFFER_SIZE] u8;
         glGetProgramInfoLog( program, log_data.count, null, log_data.data );
-        // TODO 
-        //log( "%", to_string( log_data.data ), flags=.ERROR );
+        print( "%", to_string( log_data.data ) );
         return false;
     } 
 
