@@ -6,7 +6,7 @@ OpenGLState :: struct
     indexBuffer : GLuint;
 
     textShader : Shader;
-    testTextShader : Shader;
+    testShader : Shader;
 
     white : u32;
     whiteTextureHandle : GLuint;
@@ -44,7 +44,7 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 
     shaderOk := BuildShaderProgram( *state.textShader, TEXT_SHADER );
     assert( shaderOk );
-    shaderOk = BuildShaderProgram( *state.testTextShader, TEST_TEXT_SHADER );
+    shaderOk = BuildShaderProgram( *state.testShader, TEST_SHADER );
     assert( shaderOk );
 
     // Create a white texture
@@ -71,17 +71,17 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     glVertexAttribPointer( xx state.textShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
     glVertexAttribPointer( xx state.textShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
 
-    glUseProgram( state.testTextShader.program );    
+    glUseProgram( state.testShader.program );    
 
     // Enable default text shader's attributes
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glEnableVertexAttribArray( xx state.testTextShader.positionAttrib );
-    glEnableVertexAttribArray( xx state.testTextShader.colorAttrib );
-    glEnableVertexAttribArray( xx state.testTextShader.uvAttrib );
+    glEnableVertexAttribArray( xx state.testShader.positionAttrib );
+    glEnableVertexAttribArray( xx state.testShader.colorAttrib );
+    glEnableVertexAttribArray( xx state.testShader.uvAttrib );
 
-    glVertexAttribPointer( xx state.testTextShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
-    glVertexAttribPointer( xx state.testTextShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
-    glVertexAttribPointer( xx state.testTextShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
+    glVertexAttribPointer( xx state.testShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
+    glVertexAttribPointer( xx state.testShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
+    glVertexAttribPointer( xx state.testShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
 
     DumpGLErrors( "shader" );
 
@@ -120,6 +120,9 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         (<<vertices)[3] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ u0, v1 } };
         (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = white, uv = .{ u1, v1 } };
     }
+
+    // TODO Seems to still be necessary even with a "standard" 1024x1024 texture size?
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     // FIXME Compare by some kind of id?
     if testLoadedFace.face != *face
@@ -164,7 +167,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
             g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
             g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
 
-            print( "Loaded character %: %\n", it, testLoadedFace.glyphs[ it - 32 ] );
+            //print( "Loaded character %: %\n", it, testLoadedFace.glyphs[ it - 32 ] );
 
             xoffset += xx face.glyph.bitmap.width;
             // Conservatively break the line when one more full-width glyph won't fit
@@ -243,80 +246,6 @@ OpenGLDrawAtlas :: ( state: *OpenGLState )
     glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 }
 
-// This uses Simp fonts just for testing 
-OpenGLDrawFontQuads :: ( state: *OpenGLState, font: *Simp.Dynamic_Font, color := Vector4.{1, 1, 1, 1} )
-{
-    vertices : [..] TextVertex;
-
-    draw_letter_quad :: ( font: *Simp.Dynamic_Font, quad: Simp.Font_Quad, color: Vector4, windowHeight: float, vertices: *[..] TextVertex )
-    {
-/*
-        // @Robustness: These assume our coordinates are in screenspace...
-        if quad.x1 < 0 return;
-        if quad.x0 > cast(float) render_target_width return;
-        if quad.y1 < 0 return;
-        if quad.y0 > cast(float) render_target_height return;
-*/
-        page := quad.glyph.page;
-        
-        if page.bitmap_data.width  <= 1 return;
-        if page.bitmap_data.height <= 1 return;
-
-        using quad;
-        uv0 := make_vector2(u0, v0);
-        uv1 := make_vector2(u1, v0);
-        uv2 := make_vector2(u1, v1);
-        uv3 := make_vector2(u0, v1);
-        
-        // NOTE Invert y coord
-        array_add( vertices, .{ position = make_vector3( p0.x, windowHeight - p0.y, 0 ), color = color, uv = uv0 } );
-        array_add( vertices, .{ position = make_vector3( p1.x, windowHeight - p1.y, 0 ), color = color, uv = uv1 } );
-        array_add( vertices, .{ position = make_vector3( p2.x, windowHeight - p2.y, 0 ), color = color, uv = uv2 } );
-
-        array_add( vertices, .{ position = make_vector3( p0.x, windowHeight - p0.y, 0 ), color = color, uv = uv0 } );
-        array_add( vertices, .{ position = make_vector3( p2.x, windowHeight - p2.y, 0 ), color = color, uv = uv2 } );
-        array_add( vertices, .{ position = make_vector3( p3.x, windowHeight - p3.y, 0 ), color = color, uv = uv3 } );
-    }
-
-    
-    last_texture: s64 = -1;
-
-    array_reserve( *vertices, font.current_quads.count * 6 );
-    for quad, i: font.current_quads
-    {
-        page := quad.glyph.page;
-        map  := *page.texture;
-        
-        if page.dirty
-        {
-            print( "Loading glyph texture from %\n", page.bitmap_data );
-            Simp.texture_load_from_bitmap( map, page.bitmap_data );
-            page.dirty = false;
-        }
- 
-        if map.gl_handle != last_texture
-        {
-            handle := map.gl_handle;
-            last_texture = handle;
-
-            glActiveTexture( GL_TEXTURE0 );
-            glBindTexture( GL_TEXTURE_2D, handle );  // Bind handle to slot 0.
-            // TODO Generates invalid value (due to GL version perhaps?)
-            //glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 0 );
-            glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
-            glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-            glUniform1i( state.testTextShader.textSamplerUni, 0 );
-        }
-
-        draw_letter_quad( font, quad, color, state.windowHeight, *vertices );
-    }
-
-    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
-    glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
-}
-
-testFont: *Simp.Dynamic_Font;
 //prevOrthoMatrix: Matrix4;
 OpenGLDrawFSQTest :: ( state: *OpenGLState, text: string )
 {
@@ -336,12 +265,12 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState, text: string )
                //projection._41, projection._42, projection._43, projection._44 );
         //prevOrthoMatrix = projection;
     //}
-    glUseProgram( state.testTextShader.program );    
-    glUniformMatrix4fv( state.testTextShader.projectionUni, 1, GL_TRUE, *projection._11 );
+    glUseProgram( state.testShader.program );    
+    glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
     glActiveTexture( GL_TEXTURE0 );
     glBindTexture( GL_TEXTURE_2D, state.whiteTextureHandle );  // Bind handle to slot 0.
-    glUniform1i( state.testTextShader.textSamplerUni, 0 );
+    glUniform1i( state.testShader.textSamplerUni, 0 );
 
     DumpGLErrors( "frame setup" );
 
@@ -390,21 +319,6 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState, text: string )
     }
     glBufferData( GL_ARRAY_BUFFER, verts.count * size_of(TextVertex), verts.data, GL_STREAM_DRAW );
     glDrawElements( GL_TRIANGLES, indices.count, GL_UNSIGNED_INT, null );
-
-    // Draw some text
-    if !testFont
-    {
-        testFont = Simp.get_font_at_size("data/fonts", "consolas_nf_regular.ttf", 58 );
-        if( testFont == null )
-        {
-            print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
-            exit( 1 );
-        }
-    }
-
-    Simp.convert_to_temporary_glyphs( testFont, text, 0 );
-    Simp.generate_quads_for_prepared_text( testFont, 100, 600, 0 );
-    OpenGLDrawFontQuads( state, testFont ); //, .{ 0, 0, 0, 1 } );
 }
 
 #scope_file
@@ -477,7 +391,7 @@ void main () {
 #endif // FRAGMENT_SHADER
 END
 
-TEST_TEXT_SHADER :: #string END
+TEST_SHADER :: #string END
 
 OUT_IN vec2 TextureCoords;
 OUT_IN vec4 iterated_color;
