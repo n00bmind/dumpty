@@ -169,9 +169,9 @@ main :: ()
         //OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, loadedFace );
         //OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, loadedFace );
 
-        OpenGLDrawAtlas( *glState, loadedFace );
+        //OpenGLDrawAtlas( *glState, loadedFace );
 
-        //OpenGLRender( *glState, loadedFace, displayBuffer );
+        OpenGLRender( *glState, loadedFace, displayBuffer );
 
         Swap( mainWindow );
     }

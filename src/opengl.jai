@@ -224,17 +224,20 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer 
 
     // Uniform buffer object for cells
     // TODO Review all APIs
-    cellsBlockUni : GLuint = glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
-    //print( "CellsBlock uniform: %\n", cellsBlockUni );
-    //glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
+    cellsBlockUni := glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
+    assert( cellsBlockUni != GL_INVALID_INDEX );
+    // Crazytown https://stackoverflow.com/questions/23203095/whats-gluniformblockbinding-used-for
+    // https://stackoverflow.com/questions/17827665/is-ordering-between-gluniformblockbinding-and-glbindbufferbase-important
+    glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
 
-    //cellsBufferHandle : GLuint;
-    //glGenBuffers( 1, *cellsBufferHandle );
-    //glBindBuffer( GL_UNIFORM_BUFFER, cellsBufferHandle );
-    //// TODO Read somewhere only glBufferSubData is needed per-frame, and this shouldn't be called again because it implies reallocating?
-    //glBufferData( GL_UNIFORM_BUFFER, buffer.cells.count * size_of(RendererCell), null, GL_STREAM_DRAW );
-    //glBindBufferBase( GL_UNIFORM_BUFFER, cellsBlockUni, cellsBufferHandle );
-    //glBufferSubData( GL_UNIFORM_BUFFER, 0, buffer.cells.count * size_of(RendererCell), buffer.cells.data );
+    cellsBufferHandle : GLuint;
+    glGenBuffers( 1, *cellsBufferHandle );
+    glBindBuffer( GL_UNIFORM_BUFFER, cellsBufferHandle );
+    // TODO Read somewhere only glBufferSubData is needed per-frame,
+    // and this shouldn't be called again after shader initialisation because it implies reallocating
+    glBufferData( GL_UNIFORM_BUFFER, buffer.cells.count * size_of(RendererCell), null, GL_STREAM_DRAW );
+    glBindBufferBase( GL_UNIFORM_BUFFER, cellsBlockUni, cellsBufferHandle );
+    glBufferSubData( GL_UNIFORM_BUFFER, 0, buffer.cells.count * size_of(RendererCell), buffer.cells.data );
 
     vertices : [6] TextVertex;
     white :: #run make_vector4( 1, 1, 1, 1 );
@@ -255,7 +258,7 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer 
     glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
     glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 
-    //DumpGLErrors( "OpenGLRender" );
+    DumpGLErrors( "OpenGLRender" );
 }
 
 // For testing
@@ -502,15 +505,6 @@ out vec4 color;
 uniform sampler2D text_sampler;
 //uniform vec4 text_color;
 
-void main () {
-    vec4 sample = texture(text_sampler, TextureCoords);
-    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
-    if (sample.a < .3)  discard;
-}
-#endif // FRAGMENT_SHADER
-END
-
-/*
 struct Cell {
     uint glyphIndex;
     uint foregroundColor;
@@ -532,6 +526,14 @@ vec3 UnpackColor(uint packedColor)
     return vec3(r, g, b) / 255.0;
 }
 
+void main () {
+    vec4 sample = texture(text_sampler, TextureCoords);
+    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
+}
+
+#endif // FRAGMENT_SHADER
+END
+/*
 void main ()
 {
     vec2 topLeftMargin = vec2( 10, 10 );
@@ -684,34 +686,19 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
     shader.program        = program;
     shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
     if shader.positionAttrib == -1
-    {
         print( "Couldn't bind attribute 'vert_position'\n" );
-        return false;
-    }
     shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
     if shader.colorAttrib == -1
-    {
         print( "Couldn't bind attribute 'vert_color'\n" );
-        return false;
-    }
     shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
     if shader.uvAttrib == -1
-    {
         print( "Couldn't bind attribute 'vert_uv0'\n" );
-        return false;
-    }
     shader.projectionUni  = glGetUniformLocation( program, "projection" );
     if shader.projectionUni == -1
-    {
         print( "Couldn't bind uniform 'projection'\n" );
-        return false;
-    }
     shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
     if shader.textSamplerUni == -1
-    {
         print( "Couldn't bind uniform 'text_sampler'\n" );
-        return false;
-    }
 
     return true;
 }
