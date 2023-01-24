@@ -28,23 +28,6 @@ glState: OpenGLState;
 
 test : () -> string = null;
 
-RendererCell :: struct
-{
-    glyphIndex : u32;
-    // NOTE Since we likely won't use the alpha on these, we could pack some flags in there
-    foregroundColor : u32;
-    backgroundColor : u32;
-
-    _padding : u32;
-}
-
-RendererBuffer :: struct
-{
-    cells : [] RendererCell;
-    xDim, yDim : u32;
-    //firstLineY : u32;
-}
-
 #program_export
 
 NvOptimusEnablement : DWORD = 0x01;
@@ -90,17 +73,17 @@ main :: ()
     }
 
     // TODO 
-    termCells : RendererBuffer;
-    termCells.xDim = 10;
-    termCells.yDim = 10;
-    cells, _ := NewArray( termCells.xDim * termCells.yDim, RendererCell );
+    displayBuffer : RendererBuffer;
+    displayBuffer.xDim = 10;
+    displayBuffer.yDim = 10;
+    cells, _ := NewArray( displayBuffer.xDim * displayBuffer.yDim, RendererCell );
     for * cells
     {
         it.glyphIndex = 65;
         it.foregroundColor = 0xFFFFFFFF;
         it.backgroundColor = 0;
     }
-    termCells.cells = cells;
+    displayBuffer.cells = cells;
 
 
     app : HMODULE;
@@ -179,14 +162,16 @@ main :: ()
         glState.windowWidth = cast(float)windowWidth;  
         glState.windowHeight = cast(float)windowHeight;
 
-        text := test();
+        //text := test();
         OpenGLDrawFSQTest( *glState );
 
-        OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, loadedFace );
-        OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, loadedFace );
-        OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, loadedFace );
+        //OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, loadedFace );
+        //OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, loadedFace );
+        //OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, loadedFace );
 
         OpenGLDrawAtlas( *glState, loadedFace );
+
+        //OpenGLRender( *glState, loadedFace, displayBuffer );
 
         Swap( mainWindow );
     }

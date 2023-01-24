@@ -123,7 +123,17 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     
     loadedFace: LoadedFace;
     loadedFace.face = *face;
-    loadedFace.lineHeight = face.size.metrics.height / 64.0;
+    loadedFace.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
+    print( "Font line height is %\n", loadedFace.lineHeight );
+    // TODO Apparently relying on the ascender / descender is.. unreliable .. see https://freetype.org/freetype2/docs/tutorial/step2.html
+    loadedFace.descender = abs( cast(s32)(face.size.metrics.descender / 64.0) );
+    print( "Font descender is %\n", loadedFace.descender );
+
+    // NOTE Using the bbox for the atlas is technically correct but wastes a lot of texture space.. however, memory is cheap?
+    pixels_w := FT_MulFix( (face.bbox.xMax - face.bbox.xMin), face.size.metrics.x_scale ) / 64.0;
+    pixels_h := FT_MulFix( (face.bbox.yMax - face.bbox.yMin), face.size.metrics.y_scale ) / 64.0;
+    print( "Font bbox: % x %\n", pixels_w, pixels_h );
+    loadedFace.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
 
     // TODO Seems to still be necessary even with a "standard" 1024x1024 texture size?
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -136,7 +146,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
 
     // Load glyphs for ASCII
     xoffset, yoffset : s32 = 0;
-    maxHeight : s32 = 0;
+    baseline := loadedFace.bbox.y - loadedFace.descender;
     for 32..126
     {
         error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
@@ -146,19 +156,16 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
             continue;
         }
 
-        glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, face.glyph.bitmap.width, face.glyph.bitmap.rows,
-                            GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+        glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
+                         face.glyph.bitmap.width, face.glyph.bitmap.rows, GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
 
-        advance := face.glyph.advance.x / 64.0;
+        advance := cast(s32)(face.glyph.advance.x / 64.0);
         if loadedFace.advance == 0
         {
             loadedFace.advance = advance;
             print( "Font advance is %\n", loadedFace.advance );
         }
         assert( advance == loadedFace.advance, "Font has non-uniform advance" );
-
-        if maxHeight < xx face.glyph.bitmap.rows
-            maxHeight = xx face.glyph.bitmap.rows;
 
         g := *(loadedFace.glyphs[ it - 32 ]);
         g.offset  = .{ xoffset, yoffset };
@@ -167,13 +174,12 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
 
         //print( "Loaded character %: %\n", it, loadedFace.glyphs[ it - 32 ] );
 
-        xoffset += xx face.glyph.bitmap.width;
+        xoffset += loadedFace.bbox.x;
         // Conservatively break the line when one more full-width glyph won't fit
-        if xoffset + loadedFace.advance > TEX_ATLAS_SIZE
+        if xoffset + loadedFace.bbox.x > TEX_ATLAS_SIZE
         {
-            yoffset += maxHeight;
-            assert( yoffset + loadedFace.lineHeight <= TEX_ATLAS_SIZE );
-            maxHeight = 0;
+            yoffset += loadedFace.bbox.y;
+            assert( yoffset + loadedFace.bbox.y <= TEX_ATLAS_SIZE );
             xoffset = 0;
         }
     }
@@ -182,6 +188,74 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     FT_Done_FreeType( ft );
 
     return loadedFace, true;
+}
+
+RendererCell :: struct
+{
+    glyphIndex : u32;
+    // NOTE Since we likely won't use the alpha on these, we could pack some flags in there
+    foregroundColor : u32;
+    backgroundColor : u32;
+
+    _padding : u32;
+}
+
+RendererBuffer :: struct
+{
+    cells : [] RendererCell;
+    xDim, yDim : u32;
+    //firstLineY : u32;
+}
+
+OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer )
+{
+    glUseProgram( state.gridShader.program );    
+
+    projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
+    glUniformMatrix4fv( state.gridShader.projectionUni, 1, GL_TRUE, *projection._11 );
+
+    glActiveTexture( GL_TEXTURE0 );
+    glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+    glUniform1i( state.gridShader.textSamplerUni, 0 );
+
+    // Uniform buffer object for cells
+    // TODO Review all APIs
+    cellsBlockUni : GLuint = glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
+    //print( "CellsBlock uniform: %\n", cellsBlockUni );
+    //glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
+
+    //cellsBufferHandle : GLuint;
+    //glGenBuffers( 1, *cellsBufferHandle );
+    //glBindBuffer( GL_UNIFORM_BUFFER, cellsBufferHandle );
+    //// TODO Read somewhere only glBufferSubData is needed per-frame, and this shouldn't be called again because it implies reallocating?
+    //glBufferData( GL_UNIFORM_BUFFER, buffer.cells.count * size_of(RendererCell), null, GL_STREAM_DRAW );
+    //glBindBufferBase( GL_UNIFORM_BUFFER, cellsBlockUni, cellsBufferHandle );
+    //glBufferSubData( GL_UNIFORM_BUFFER, 0, buffer.cells.count * size_of(RendererCell), buffer.cells.data );
+
+    vertices : [6] TextVertex;
+    white :: #run make_vector4( 1, 1, 1, 1 );
+    red :: #run make_vector4( 1, 0, 0, 1 );
+    green :: #run make_vector4( 0, 1, 0, 1 );
+    blue :: #run make_vector4( 0, 0, 1, 1 );
+
+    // TODO Only need position now
+    vertices[1] = .{ position = make_vector3( 0, 0, 0 ), color = white, uv = .{ 0, 0 } };
+    vertices[0] = .{ position = make_vector3( 0, state.windowHeight, 0 ), color = white, uv = .{ 0, 1 } };
+    vertices[2] = .{ position = make_vector3( state.windowWidth, 0, 0 ), color = white, uv = .{ 1, 0 } };
+
+    vertices[4] = .{ position = make_vector3( state.windowWidth, 0, 0 ), color = white, uv = .{ 1, 0 } };
+    vertices[3] = .{ position = make_vector3( 0, state.windowHeight, 0 ), color = white, uv = .{ 0, 1 } };
+    vertices[5] = .{ position = make_vector3( state.windowWidth, state.windowHeight, 0 ), color = white, uv = .{ 1, 1 } };
+
+    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
+    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
+    glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
+
+    //DumpGLErrors( "OpenGLRender" );
 }
 
 // For testing
@@ -225,16 +299,6 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
 
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
-
-    // Uniform buffer object for cells
-    //cellsBlockUni : GLuint = glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
-    //glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
-
-    //GLuint uboLights;
-    //glGenBuffers(1, &uboLights);
-    //glBindBuffer(GL_UNIFORM_BUFFER, uboLights);
-    //glBufferData(GL_UNIFORM_BUFFER, sizeof(lights), NULL, GL_DYNAMIC_DRAW);
-    //glBindBufferBase(GL_UNIFORM_BUFFER, cellsBlockUni, uboLights);
 
     c := text.data;
     while c < text.data + text.count
@@ -399,8 +463,10 @@ LoadedFace :: struct
 {
     glyphs     : [126-32+1] Glyph;
     face       : *FT_Face;
-    advance    : float;
-    lineHeight : float;
+    bbox       : v2i;
+    advance    : s32;
+    lineHeight : s32;
+    descender  : s32;   // Absolute value
     texture    : u32;
 }
 
@@ -412,6 +478,7 @@ OUT_IN vec4 iterated_color;
 
 
 #ifdef VERTEX_SHADER
+
 in vec4 vert_position;
 in vec4 vert_color;
 in vec2 vert_uv0;
@@ -423,26 +490,17 @@ void main() {
     iterated_color  = vert_color;
     TextureCoords   = vert_uv0;
 }
+
 #endif // VERTEX_SHADER
 
 
 #ifdef FRAGMENT_SHADER
+
+layout(origin_upper_left) in vec4 gl_FragCoord;
 out vec4 color;
 
 uniform sampler2D text_sampler;
-uniform vec4 text_color;
-
-struct Cell {
-    uint glyphIndex;
-    uint foregroundColor;
-    uint backgroundColor;
-    uint _padding;
-};
-
-// TODO This seems to be near the maximum for the GTX. Test out on old cards!!
-layout (std140) uniform CellsBlock {
-    Cell cells[4096];
-};
+//uniform vec4 text_color;
 
 void main () {
     vec4 sample = texture(text_sampler, TextureCoords);
@@ -451,6 +509,73 @@ void main () {
 }
 #endif // FRAGMENT_SHADER
 END
+
+/*
+struct Cell {
+    uint glyphIndex;
+    uint foregroundColor;
+    uint backgroundColor;
+    uint _padding;
+};
+
+// TODO This seems to be near the maximum for the GTX. Test on old cards!!
+layout (std140) uniform CellsBlock {
+    Cell cells[4096];
+};
+
+vec3 UnpackColor(uint packedColor)
+{
+    uint r = packedColor & 0xffu;
+    uint g = (packedColor >> 8) & 0xffu;
+    uint b = (packedColor >> 16) & 0xffu;
+
+    return vec3(r, g, b) / 255.0;
+}
+
+void main ()
+{
+    vec2 topLeftMargin = vec2( 10, 10 );
+    uvec2 cellSize = uvec2( 32, 68 ); // TODO
+        uvec2 termSize = uvec2( 10, 10 );
+    uvec2 cellIndex = uvec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
+    uvec2 cellPos = uvec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
+
+    vec3 result;
+    if( (gl_FragCoord.x >= topLeftMargin.x) &&
+        (gl_FragCoord.y >= topLeftMargin.y) &&
+        (cellIndex.x < termSize.x) &&
+        (cellIndex.y < termSize.y) )
+    {
+        Cell cell = cells[cellIndex.y * termSize.x + cellIndex.x];
+        //uvec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
+        uvec2 glyphPos = uvec2( 10, 0 ) * cellSize;
+
+        uvec2 pixelPos = glyphPos + cellPos;
+        // FIXME Normalize pos
+        vec4 glyphTexel = texture(text_sampler, pixelPos);
+
+        vec3 background = UnpackColor( cell.backgroundColor );
+        vec3 foreground = UnpackColor( cell.foregroundColor );
+        //vec3 Blink = UnpackColor(BlinkModulate);
+
+        //if((cell.foreground >> 28) & 1) foreground *= Blink;
+        //if((cell.foreground >> 25) & 1) foreground *= 0.5;
+
+        // TODO: proper ClearType blending
+        result = (1 - glyphTexel.a) * background + glyphTexel.rgb * foreground;
+    }
+    else
+    {
+        // TODO: margin color
+        result = vec3( 0.1, 0.1, 0.1 );
+    }
+
+    color = vec4( result, 1 );
+}
+
+#endif // FRAGMENT_SHADER
+END
+*/
 
 TEST_SHADER :: #string END
 
@@ -558,15 +683,35 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
 
     shader.program        = program;
     shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
-    shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
-    shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
-    shader.projectionUni  = glGetUniformLocation( program, "projection" );
-    shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
-
-    // TODO Log appropriately
-    if( shader.positionAttrib == -1 || shader.colorAttrib == -1 || shader.uvAttrib == -1
-        || shader.projectionUni == -1 || shader.textSamplerUni == -1 )
+    if shader.positionAttrib == -1
+    {
+        print( "Couldn't bind attribute 'vert_position'\n" );
         return false;
+    }
+    shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
+    if shader.colorAttrib == -1
+    {
+        print( "Couldn't bind attribute 'vert_color'\n" );
+        return false;
+    }
+    shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
+    if shader.uvAttrib == -1
+    {
+        print( "Couldn't bind attribute 'vert_uv0'\n" );
+        return false;
+    }
+    shader.projectionUni  = glGetUniformLocation( program, "projection" );
+    if shader.projectionUni == -1
+    {
+        print( "Couldn't bind uniform 'projection'\n" );
+        return false;
+    }
+    shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
+    if shader.textSamplerUni == -1
+    {
+        print( "Couldn't bind uniform 'text_sampler'\n" );
+        return false;
+    }
 
     return true;
 }
