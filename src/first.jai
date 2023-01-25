@@ -1,16 +1,13 @@
 #import "Basic";
+#import "System";
 
 #scope_file
 
 #import "File";
 #import "String";
-#import "System";
 #import "Window_Creation";
 #import "Input";
 #import "File_Utilities";
-// TODO How to enable this?
-#import "GL"; //( DUMP_GL_ERRORS = true );
-#import "freetype-2.12.1";
 
 #if OS == .WINDOWS {
     #import "Windows";
@@ -80,7 +77,7 @@ main :: ()
     for * cells
     {
         it.glyphIndex = 65;
-        it.foregroundColor = 0xFFFFFFFF;
+        it.foregroundColor = 0xFFFFFF;
         it.backgroundColor = 0;
     }
     displayBuffer.cells = cells;

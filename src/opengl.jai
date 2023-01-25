@@ -40,13 +40,6 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     glGenBuffers( 1, *state.vertexBuffer );
     glGenBuffers( 1, *state.indexBuffer );
 
-    DumpGLErrors( "context" );
-
-    shaderOk := BuildShaderProgram( *state.gridShader, GRID_SHADER );
-    assert( shaderOk );
-    shaderOk = BuildShaderProgram( *state.testShader, TEST_SHADER );
-    assert( shaderOk );
-
     // Create a white texture
     state.white = 0xFFFFFFFF;
     state.whiteTextureHandle = OpenGLAllocateTexture( cast(*u8)*state.white, 1, 1, true, null );
@@ -58,32 +51,15 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     glDisable( GL_CULL_FACE );
     glDisable( GL_DEPTH_TEST );
 
-    glUseProgram( state.gridShader.program );    
+    DumpGLErrors( "context" );
 
-    // Enable default text shader's attributes
+    // Bind buffer so shaders can bind their attributes
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glEnableVertexAttribArray( xx state.gridShader.positionAttrib );
-    glEnableVertexAttribArray( xx state.gridShader.colorAttrib );
-    glEnableVertexAttribArray( xx state.gridShader.uvAttrib );
 
-    textVertex: *TextVertex: null;
-    glVertexAttribPointer( xx state.gridShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
-    glVertexAttribPointer( xx state.gridShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
-    glVertexAttribPointer( xx state.gridShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
-
-    glUseProgram( state.testShader.program );    
-
-    // Enable default text shader's attributes
-    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glEnableVertexAttribArray( xx state.testShader.positionAttrib );
-    glEnableVertexAttribArray( xx state.testShader.colorAttrib );
-    glEnableVertexAttribArray( xx state.testShader.uvAttrib );
-
-    glVertexAttribPointer( xx state.testShader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
-    glVertexAttribPointer( xx state.testShader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
-    glVertexAttribPointer( xx state.testShader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
-
-    DumpGLErrors( "shader" );
+    shaderOk := BuildGridShaderProgram( *state.gridShader );
+    assert( shaderOk );
+    shaderOk = BuildTestShaderProgram( *state.testShader );
+    assert( shaderOk );
 
     return true;
 }
@@ -441,7 +417,9 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 #scope_file
 
 #import "Math";
-Simp  :: #import "Simp";
+// TODO Enable this after the jai update
+#import "GL"; //( DUMP_GL_ERRORS = true );
+#import "freetype-2.12.1";
 
 TextVertex :: struct
 {
@@ -474,6 +452,51 @@ LoadedFace :: struct
 }
 
 
+LOG_BUFFER_SIZE :: 512;
+
+CreateAndCompileShader :: ( shaderString: string, prefix: string, shaderType : GLenum ) -> GLuint
+{
+    shaderObj := glCreateShader( shaderType );
+
+    shaders: [2] *u8;
+    lengths: [2] s32;
+
+    shaders[0] = prefix.data;
+    shaders[1] = shaderString.data;
+    lengths[0] = xx prefix.count;
+    lengths[1] = xx shaderString.count;
+
+    glShaderSource( shaderObj, 2, shaders.data, lengths.data );
+    glCompileShader( shaderObj );
+
+    success : GLint;
+    glGetShaderiv( shaderObj, GL_COMPILE_STATUS, *success );
+
+    if !success
+    {
+        log_data: [LOG_BUFFER_SIZE] u8;
+        glGetShaderInfoLog( shaderObj, log_data.count, null, log_data.data );
+        print( "%", to_string( log_data.data ) );
+        return 0;
+    }
+
+    return shaderObj;
+}
+
+PREFIX_V :: #string END
+#version 330 core
+#define VERTEX_SHADER
+#define OUT_IN out
+END
+
+PREFIX_F :: #string END
+#version 330 core
+#define FRAGMENT_SHADER
+#define OUT_IN in
+END
+
+BuildGridShaderProgram :: ( shader: *Shader ) -> bool
+{
 GRID_SHADER :: #string END
 
 OUT_IN vec2 TextureCoords;
@@ -526,19 +549,11 @@ vec3 UnpackColor(uint packedColor)
     return vec3(r, g, b) / 255.0;
 }
 
-void main () {
-    vec4 sample = texture(text_sampler, TextureCoords);
-    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
-}
-
-#endif // FRAGMENT_SHADER
-END
-/*
 void main ()
 {
     vec2 topLeftMargin = vec2( 10, 10 );
-    uvec2 cellSize = uvec2( 32, 68 ); // TODO
-        uvec2 termSize = uvec2( 10, 10 );
+    uvec2 cellSize = uvec2( 65, 77 ); // TODO
+    uvec2 termSize = uvec2( 10, 10 );
     uvec2 cellIndex = uvec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
     uvec2 cellPos = uvec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
 
@@ -550,11 +565,10 @@ void main ()
     {
         Cell cell = cells[cellIndex.y * termSize.x + cellIndex.x];
         //uvec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
-        uvec2 glyphPos = uvec2( 10, 0 ) * cellSize;
+        uvec2 glyphPos = uvec2( 4, 3 ) * cellSize;
 
-        uvec2 pixelPos = glyphPos + cellPos;
-        // FIXME Normalize pos
-        vec4 glyphTexel = texture(text_sampler, pixelPos);
+        vec2 pixelPos = vec2( glyphPos + cellPos );
+        vec4 glyphTexel = texture(text_sampler, pixelPos / 1024);
 
         vec3 background = UnpackColor( cell.backgroundColor );
         vec3 foreground = UnpackColor( cell.foregroundColor );
@@ -563,13 +577,15 @@ void main ()
         //if((cell.foreground >> 28) & 1) foreground *= Blink;
         //if((cell.foreground >> 25) & 1) foreground *= 0.5;
 
-        // TODO: proper ClearType blending
-        result = (1 - glyphTexel.a) * background + glyphTexel.rgb * foreground;
+        // TODO proper ClearType blending
+        // 1-channel texture so alpha is in the r component
+        result = (1 - glyphTexel.r) * background + glyphTexel.r * foreground;
+        //if (sample.r < .3)  discard;
     }
     else
     {
         // TODO: margin color
-        result = vec3( 0.1, 0.1, 0.1 );
+        result = vec3( 0.1, 0.1, 0.3 );
     }
 
     color = vec4( result, 1 );
@@ -577,8 +593,76 @@ void main ()
 
 #endif // FRAGMENT_SHADER
 END
-*/
 
+    vShader := CreateAndCompileShader( GRID_SHADER, PREFIX_V, GL_VERTEX_SHADER );
+    fShader := CreateAndCompileShader( GRID_SHADER, PREFIX_F, GL_FRAGMENT_SHADER );
+    if !vShader || !fShader
+        return false;
+
+    program := glCreateProgram();
+    glAttachShader( program, vShader );
+    glAttachShader( program, fShader );
+    glLinkProgram( program );
+
+    success : GLint = 0;
+    glGetProgramiv( program, GL_LINK_STATUS, *success );
+
+    if !success
+    {
+        log_data: [LOG_BUFFER_SIZE] u8;
+        glGetProgramInfoLog( program, log_data.count, null, log_data.data );
+        print( "%", to_string( log_data.data ) );
+        return false;
+    } 
+
+    glDeleteShader( vShader );
+    glDeleteShader( fShader );
+
+    shader.program = program;
+    glUseProgram( shader.program );    
+
+    textVertex: *TextVertex: null;
+    shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
+    if shader.positionAttrib == -1
+        print( "Couldn't bind attribute 'vert_position'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.positionAttrib );
+        glVertexAttribPointer( xx shader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
+    }
+
+    shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
+    if shader.colorAttrib == -1
+        print( "Couldn't bind attribute 'vert_color'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.colorAttrib );
+        glVertexAttribPointer( xx shader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
+    }
+
+    shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
+    if shader.uvAttrib == -1
+        print( "Couldn't bind attribute 'vert_uv0'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.uvAttrib );
+        glVertexAttribPointer( xx shader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
+    }
+
+    shader.projectionUni  = glGetUniformLocation( program, "projection" );
+    if shader.projectionUni == -1
+        print( "Couldn't bind uniform 'projection'\n" );
+    shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
+    if shader.textSamplerUni == -1
+        print( "Couldn't bind uniform 'text_sampler'\n" );
+
+    DumpGLErrors( "shader" );
+
+    return true;
+}
+
+BuildTestShaderProgram :: ( shader: *Shader ) -> bool
+{
 TEST_SHADER :: #string END
 
 OUT_IN vec2 TextureCoords;
@@ -614,53 +698,8 @@ void main () {
 #endif // FRAGMENT_SHADER
 END
 
-BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
-{
-    LOG_BUFFER_SIZE :: 512;
-    
-    CreateAndCompileShader :: ( shaderString: string, prefix: string, shaderType : GLenum ) -> GLuint
-    {
-        shaderObj := glCreateShader( shaderType );
-
-        shaders: [2] *u8;
-        lengths: [2] s32;
-
-        shaders[0] = prefix.data;
-        shaders[1] = shaderString.data;
-        lengths[0] = xx prefix.count;
-        lengths[1] = xx shaderString.count;
-
-        glShaderSource( shaderObj, 2, shaders.data, lengths.data );
-        glCompileShader( shaderObj );
-
-        success : GLint;
-        glGetShaderiv( shaderObj, GL_COMPILE_STATUS, *success );
-
-        if !success
-        {
-            log_data: [LOG_BUFFER_SIZE] u8;
-            glGetShaderInfoLog( shaderObj, log_data.count, null, log_data.data );
-            print( "%", to_string( log_data.data ) );
-            return 0;
-        }
-
-        return shaderObj;
-    }
-
-    PREFIX_V :: #string END
-    #version 330 core
-    #define VERTEX_SHADER
-    #define OUT_IN out
-    END
-
-    PREFIX_F :: #string END
-    #version 330 core
-    #define FRAGMENT_SHADER
-    #define OUT_IN in
-    END
-    
-    vShader := CreateAndCompileShader( shaderString, PREFIX_V, GL_VERTEX_SHADER );
-    fShader := CreateAndCompileShader( shaderString, PREFIX_F, GL_FRAGMENT_SHADER );
+    vShader := CreateAndCompileShader( TEST_SHADER, PREFIX_V, GL_VERTEX_SHADER );
+    fShader := CreateAndCompileShader( TEST_SHADER, PREFIX_F, GL_FRAGMENT_SHADER );
     if !vShader || !fShader
         return false;
 
@@ -683,22 +722,45 @@ BuildShaderProgram :: ( shader: *Shader, shaderString: string ) -> bool
     glDeleteShader( vShader );
     glDeleteShader( fShader );
 
-    shader.program        = program;
+    shader.program = program;
+    glUseProgram( shader.program );    
+
+    textVertex: *TextVertex: null;
     shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
     if shader.positionAttrib == -1
         print( "Couldn't bind attribute 'vert_position'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.positionAttrib );
+        glVertexAttribPointer( xx shader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
+    }
+
     shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
     if shader.colorAttrib == -1
         print( "Couldn't bind attribute 'vert_color'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.colorAttrib );
+        glVertexAttribPointer( xx shader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
+    }
+
     shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
     if shader.uvAttrib == -1
         print( "Couldn't bind attribute 'vert_uv0'\n" );
+    else
+    {
+        glEnableVertexAttribArray( xx shader.uvAttrib );
+        glVertexAttribPointer( xx shader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
+    }
+
     shader.projectionUni  = glGetUniformLocation( program, "projection" );
     if shader.projectionUni == -1
         print( "Couldn't bind uniform 'projection'\n" );
     shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
     if shader.textSamplerUni == -1
         print( "Couldn't bind uniform 'text_sampler'\n" );
+
+    DumpGLErrors( "shader" );
 
     return true;
 }
