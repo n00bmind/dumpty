@@ -5,23 +5,11 @@ OpenGLState :: struct
     vertexBuffer : GLuint;
     indexBuffer : GLuint;
 
-    gridShader : Shader;
+    gridShader : GridShader;
     testShader : Shader;
 
     white : u32;
     whiteTextureHandle : GLuint;
-}
-
-Shader :: struct
-{
-    program : GLuint;
-
-    positionAttrib : GLint;
-    colorAttrib : GLint;
-    uvAttrib : GLint;
-
-    projectionUni : GLint;
-    textSamplerUni : GLint;
 }
 
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
@@ -105,13 +93,15 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     loadedFace.descender = abs( cast(s32)(face.size.metrics.descender / 64.0) );
     print( "Font descender is %\n", loadedFace.descender );
 
-    // NOTE Using the bbox for the atlas is technically correct but wastes a lot of texture space.. however, memory is cheap?
+    // NOTE Using the bbox for the atlas is technically correct as that guarantees to provide enough space for all the font's glyphs
+    // However in the simple grid shader we're using, we need glyphs in the atlas to be rendered in the same grid they'll be placed into in the final image
+    // This is mostly unimportant when dealing with ASCII only, but it will become more relevant when we support unicode
     pixels_w := FT_MulFix( (face.bbox.xMax - face.bbox.xMin), face.size.metrics.x_scale ) / 64.0;
     pixels_h := FT_MulFix( (face.bbox.yMax - face.bbox.yMin), face.size.metrics.y_scale ) / 64.0;
     print( "Font bbox: % x %\n", pixels_w, pixels_h );
     loadedFace.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
 
-    // TODO Seems to still be necessary even with a "standard" 1024x1024 texture size?
+    // TODO Seems to still be necessary even with a Po2 1024x1024 texture size?
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     glGenTextures( 1, *loadedFace.texture );
@@ -121,8 +111,9 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, TEX_ATLAS_SIZE, TEX_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, null );
 
     // Load glyphs for ASCII
+    x, y : s32 = 0;
     xoffset, yoffset : s32 = 0;
-    baseline := loadedFace.bbox.y - loadedFace.descender;
+    baseline := loadedFace.lineHeight - loadedFace.descender;
     for 32..126
     {
         error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
@@ -144,18 +135,24 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         assert( advance == loadedFace.advance, "Font has non-uniform advance" );
 
         g := *(loadedFace.glyphs[ it - 32 ]);
+        g.index   = .{ x, y };
         g.offset  = .{ xoffset, yoffset };
         g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
         g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
 
         //print( "Loaded character %: %\n", it, loadedFace.glyphs[ it - 32 ] );
 
-        xoffset += loadedFace.bbox.x;
+        x += 1;
+        xoffset += loadedFace.advance;
         // Conservatively break the line when one more full-width glyph won't fit
-        if xoffset + loadedFace.bbox.x > TEX_ATLAS_SIZE
+        if xoffset + loadedFace.advance > TEX_ATLAS_SIZE
         {
-            yoffset += loadedFace.bbox.y;
-            assert( yoffset + loadedFace.bbox.y <= TEX_ATLAS_SIZE );
+            y += 1;
+            // TODO This is probably still too much.. maybe use the font's pixel height?
+            yoffset += loadedFace.lineHeight;
+            assert( yoffset + loadedFace.lineHeight <= TEX_ATLAS_SIZE );
+
+            x = 0;
             xoffset = 0;
         }
     }
@@ -176,14 +173,20 @@ RendererCell :: struct
     _padding : u32;
 }
 
-RendererBuffer :: struct
+RendererState :: struct
 {
     cells : [] RendererCell;
-    xDim, yDim : u32;
-    //firstLineY : u32;
+
+    Constants :: struct
+    {
+        topLeftMargin: v2s;
+        cellSize: v2s;
+        cellCount: v2s;
+    }
+    using constants : Constants;
 }
 
-OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer )
+OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState )
 {
     glUseProgram( state.gridShader.program );    
 
@@ -198,22 +201,10 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer 
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
     glUniform1i( state.gridShader.textSamplerUni, 0 );
 
-    // Uniform buffer object for cells
-    // TODO Review all APIs
-    cellsBlockUni := glGetUniformBlockIndex( state.gridShader.program, "CellsBlock" );
-    assert( cellsBlockUni != GL_INVALID_INDEX );
-    // Crazytown https://stackoverflow.com/questions/23203095/whats-gluniformblockbinding-used-for
-    // https://stackoverflow.com/questions/17827665/is-ordering-between-gluniformblockbinding-and-glbindbufferbase-important
-    glUniformBlockBinding( state.gridShader.program, cellsBlockUni, 0 );
-
-    cellsBufferHandle : GLuint;
-    glGenBuffers( 1, *cellsBufferHandle );
-    glBindBuffer( GL_UNIFORM_BUFFER, cellsBufferHandle );
-    // TODO Read somewhere only glBufferSubData is needed per-frame,
-    // and this shouldn't be called again after shader initialisation because it implies reallocating
-    glBufferData( GL_UNIFORM_BUFFER, buffer.cells.count * size_of(RendererCell), null, GL_STREAM_DRAW );
-    glBindBufferBase( GL_UNIFORM_BUFFER, cellsBlockUni, cellsBufferHandle );
-    glBufferSubData( GL_UNIFORM_BUFFER, 0, buffer.cells.count * size_of(RendererCell), buffer.cells.data );
+    glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.constantsBufferHandle );
+    glBufferSubData( GL_UNIFORM_BUFFER, 0, size_of(RendererState.Constants), *renderer.constants );
+    glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
+    glBufferSubData( GL_UNIFORM_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
 
     vertices : [6] TextVertex;
     white :: #run make_vector4( 1, 1, 1, 1 );
@@ -221,7 +212,7 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, buffer: RendererBuffer 
     green :: #run make_vector4( 0, 1, 0, 1 );
     blue :: #run make_vector4( 0, 0, 1, 1 );
 
-    // TODO Only need position now
+    // TODO No need for passing vertices, just do everything in the vertex shader .. https://stackoverflow.com/a/59738005/2151254
     vertices[1] = .{ position = make_vector3( 0, 0, 0 ), color = white, uv = .{ 0, 0 } };
     vertices[0] = .{ position = make_vector3( 0, state.windowHeight, 0 ), color = white, uv = .{ 0, 1 } };
     vertices[2] = .{ position = make_vector3( state.windowWidth, 0, 0 ), color = white, uv = .{ 1, 0 } };
@@ -428,23 +419,50 @@ TextVertex :: struct
     uv:         Vector2;
 }
 
-v2i :: struct
+v2 :: Vector2;
+v2s :: struct
 {
     x, y : s32;
+}
+v2u :: struct
+{
+    x, y : u32;
+}
+
+Shader :: struct
+{
+    program : GLuint;
+
+    positionAttrib : GLint;
+    colorAttrib : GLint;
+    uvAttrib : GLint;
+
+    projectionUni : GLint;
+    textSamplerUni : GLint;
+}
+GridShader :: struct
+{
+    using shader: Shader;
+
+    constantsBlockUni: GLuint;
+    constantsBufferHandle: GLuint;
+    cellsBlockUni: GLuint;
+    cellsBufferHandle : GLuint;
 }
 
 Glyph :: struct
 {
-    offset : v2i;
-    size : v2i;
-    bearing : v2i;
+    index:   v2s;
+    offset:  v2s;
+    size:    v2s;
+    bearing: v2s;
 }
 
 LoadedFace :: struct
 {
     glyphs     : [126-32+1] Glyph;
     face       : *FT_Face;
-    bbox       : v2i;
+    bbox       : v2s;
     advance    : s32;
     lineHeight : s32;
     descender  : s32;   // Absolute value
@@ -495,7 +513,7 @@ PREFIX_F :: #string END
 #define OUT_IN in
 END
 
-BuildGridShaderProgram :: ( shader: *Shader ) -> bool
+BuildGridShaderProgram :: ( shader: *GridShader ) -> bool
 {
 GRID_SHADER :: #string END
 
@@ -528,44 +546,56 @@ out vec4 color;
 uniform sampler2D text_sampler;
 //uniform vec4 text_color;
 
-struct Cell {
+layout (std140) uniform ConstantsBlock
+{
+    ivec2 topLeftMargin;
+    ivec2 cellSize;
+    ivec2 cellCount;
+};
+
+struct Cell
+{
     uint glyphIndex;
     uint foregroundColor;
     uint backgroundColor;
     uint _padding;
 };
 
-// TODO This seems to be near the maximum for the GTX. Test on old cards!!
-layout (std140) uniform CellsBlock {
+// TODO This seems to be near the maximum uniform block size for the GTX. Test on old cards!!
+layout (std140) uniform CellsBlock
+{
     Cell cells[4096];
 };
+
+ivec2 UnpackGlyphXY( uint packedIndex )
+{
+    uint x = packedIndex & 0xffffu;
+    uint y = packedIndex >> 16;
+    return ivec2( x, y );
+}
 
 vec3 UnpackColor(uint packedColor)
 {
     uint r = packedColor & 0xffu;
     uint g = (packedColor >> 8) & 0xffu;
     uint b = (packedColor >> 16) & 0xffu;
-
     return vec3(r, g, b) / 255.0;
 }
 
 void main ()
 {
-    vec2 topLeftMargin = vec2( 10, 10 );
-    uvec2 cellSize = uvec2( 65, 77 ); // TODO
-    uvec2 termSize = uvec2( 10, 10 );
-    uvec2 cellIndex = uvec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
-    uvec2 cellPos = uvec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
+    ivec2 cellIndex = ivec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
+    ivec2 cellPos = ivec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
 
     vec3 result;
+    // TODO cellIndex >= 0 doesnt work here??
     if( (gl_FragCoord.x >= topLeftMargin.x) &&
         (gl_FragCoord.y >= topLeftMargin.y) &&
-        (cellIndex.x < termSize.x) &&
-        (cellIndex.y < termSize.y) )
+        (cellIndex.x < cellCount.x) &&
+        (cellIndex.y < cellCount.y) )
     {
-        Cell cell = cells[cellIndex.y * termSize.x + cellIndex.x];
-        //uvec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
-        uvec2 glyphPos = uvec2( 4, 3 ) * cellSize;
+        Cell cell = cells[cellIndex.y * cellCount.x + cellIndex.x];
+        ivec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
 
         vec2 pixelPos = vec2( glyphPos + cellPos );
         vec4 glyphTexel = texture(text_sampler, pixelPos / 1024);
@@ -655,6 +685,29 @@ END
     shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
     if shader.textSamplerUni == -1
         print( "Couldn't bind uniform 'text_sampler'\n" );
+
+    // Uniform buffer object for constants
+    shader.constantsBlockUni = glGetUniformBlockIndex( shader.program, "ConstantsBlock" );
+    assert( shader.constantsBlockUni != GL_INVALID_INDEX );
+    // Bind it to binding point 0
+    // See 'Using uniform buffers' in https://learnopengl.com/Advanced-OpenGL/Advanced-GLSL
+    glUniformBlockBinding( shader.program, shader.constantsBlockUni, 0 );
+    // And its buffer
+    glGenBuffers( 1, *shader.constantsBufferHandle );
+    glBindBuffer( GL_UNIFORM_BUFFER, shader.constantsBufferHandle );
+    glBufferData( GL_UNIFORM_BUFFER, size_of(RendererState.Constants), null, GL_STREAM_DRAW );
+    glBindBufferBase( GL_UNIFORM_BUFFER, 0, shader.constantsBufferHandle );
+
+    // Uniform buffer object for cells
+    shader.cellsBlockUni = glGetUniformBlockIndex( shader.program, "CellsBlock" );
+    assert( shader.cellsBlockUni != GL_INVALID_INDEX );
+    glUniformBlockBinding( shader.program, shader.cellsBlockUni, 1 );
+    // And its buffer
+    glGenBuffers( 1, *shader.cellsBufferHandle );
+    glBindBuffer( GL_UNIFORM_BUFFER, shader.cellsBufferHandle );
+    // FIXME Define max cells properly and pass it to the shader code
+    glBufferData( GL_UNIFORM_BUFFER, 4096 * size_of(RendererCell), null, GL_STREAM_DRAW );
+    glBindBufferBase( GL_UNIFORM_BUFFER, 1, shader.cellsBufferHandle );
 
     DumpGLErrors( "shader" );
 

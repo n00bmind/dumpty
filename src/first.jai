@@ -62,25 +62,28 @@ main :: ()
     //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
 
 
-    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 58 );
+    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 30 );
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
         exit( 1 );
     }
 
-    // TODO 
-    displayBuffer : RendererBuffer;
-    displayBuffer.xDim = 10;
-    displayBuffer.yDim = 10;
-    cells, _ := NewArray( displayBuffer.xDim * displayBuffer.yDim, RendererCell );
+    renderer : RendererState;
+    renderer.cellSize = .{ loadedFace.advance, loadedFace.lineHeight };
+    renderer.cellCount.x = 20;
+    renderer.cellCount.y = 10;
+    renderer.topLeftMargin = .{ 10, 10 };
+
+    cells, _ := NewArray( renderer.cellCount.x * renderer.cellCount.y, RendererCell );
+    glyphA := loadedFace.glyphs[ #char "A" - 32 ];
     for * cells
     {
-        it.glyphIndex = 65;
+        it.glyphIndex = cast(u32)((glyphA.index.y << 16) | glyphA.index.x);
         it.foregroundColor = 0xFFFFFF;
         it.backgroundColor = 0;
     }
-    displayBuffer.cells = cells;
+    renderer.cells = cells;
 
 
     app : HMODULE;
@@ -168,7 +171,7 @@ main :: ()
 
         //OpenGLDrawAtlas( *glState, loadedFace );
 
-        OpenGLRender( *glState, loadedFace, displayBuffer );
+        OpenGLRender( *glState, loadedFace, renderer );
 
         Swap( mainWindow );
     }
