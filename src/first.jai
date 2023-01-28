@@ -32,6 +32,14 @@ AmdPowerXpressRequestHighPerformance : DWORD = 0x01;
 
 #scope_export
 
+PackColor :: ( color: v3 ) -> u32
+{
+    result: u32 = (((cast(u32)(color.z * 255)) & 0xFF) << 16)
+                | (((cast(u32)(color.y * 255)) & 0xFF) << 8)
+                |  ((cast(u32)(color.x * 255)) & 0xFF);
+    return result;
+}
+
 main :: ()
 {
     path := path_strip_filename( get_path_of_running_executable() );
@@ -69,19 +77,24 @@ main :: ()
         exit( 1 );
     }
 
+    // TODO All this must be dynamic
     renderer : RendererState;
+    renderer.windowDim = .{ windowWidth, windowHeight };
     renderer.cellSize = .{ loadedFace.advance, loadedFace.lineHeight };
-    renderer.cellCount.x = 20;
-    renderer.cellCount.y = 10;
-    renderer.topLeftMargin = .{ 10, 10 };
+    renderer.cellCount.x = 25;
+    renderer.cellCount.y = 15;
+    renderer.borderDim = .{ 10, 10 };
+    renderer.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
 
     cells, _ := NewArray( renderer.cellCount.x * renderer.cellCount.y, RendererCell );
     glyphA := loadedFace.glyphs[ #char "A" - 32 ];
+    fg := PackColor( .{ 1, 1, 1 } );
+    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
     for * cells
     {
         it.glyphIndex = cast(u32)((glyphA.index.y << 16) | glyphA.index.x);
-        it.foregroundColor = 0xFFFFFF;
-        it.backgroundColor = 0;
+        it.foregroundColor = fg;
+        it.backgroundColor = bg;
     }
     renderer.cells = cells;
 

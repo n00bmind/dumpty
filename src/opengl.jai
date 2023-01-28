@@ -1,3 +1,15 @@
+
+v2 :: Vector2;
+v3 :: Vector3;
+v2s :: struct
+{
+    x, y : s32;
+}
+v2u :: struct
+{
+    x, y : u32;
+}
+
 OpenGLState :: struct
 {
     windowWidth, windowHeight : float;
@@ -6,7 +18,7 @@ OpenGLState :: struct
     indexBuffer : GLuint;
 
     gridShader : GridShader;
-    testShader : Shader;
+    testShader : TestShader;
 
     white : u32;
     whiteTextureHandle : GLuint;
@@ -179,19 +191,23 @@ RendererState :: struct
 
     Constants :: struct
     {
-        topLeftMargin: v2s;
+        windowDim: v2s;
         cellSize: v2s;
         cellCount: v2s;
+        borderDim: v2s;
+        borderColor: u32;
     }
     using constants : Constants;
 }
 
 OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState )
 {
-    glUseProgram( state.gridShader.program );    
+    // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
+    fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
+    fbHeight := state.windowHeight; // * io.DisplayFramebufferScale.y);
+    glViewport( 0, 0, xx fbWidth, xx fbHeight );
 
-    projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
-    glUniformMatrix4fv( state.gridShader.projectionUni, 1, GL_TRUE, *projection._11 );
+    glUseProgram( state.gridShader.program );    
 
     glActiveTexture( GL_TEXTURE0 );
     glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
@@ -199,31 +215,14 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
-    glUniform1i( state.gridShader.textSamplerUni, 0 );
+    glUniform1i( state.gridShader.glyphSamplerUni, 0 );
 
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.constantsBufferHandle );
     glBufferSubData( GL_UNIFORM_BUFFER, 0, size_of(RendererState.Constants), *renderer.constants );
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
     glBufferSubData( GL_UNIFORM_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
 
-    vertices : [6] TextVertex;
-    white :: #run make_vector4( 1, 1, 1, 1 );
-    red :: #run make_vector4( 1, 0, 0, 1 );
-    green :: #run make_vector4( 0, 1, 0, 1 );
-    blue :: #run make_vector4( 0, 0, 1, 1 );
-
-    // TODO No need for passing vertices, just do everything in the vertex shader .. https://stackoverflow.com/a/59738005/2151254
-    vertices[1] = .{ position = make_vector3( 0, 0, 0 ), color = white, uv = .{ 0, 0 } };
-    vertices[0] = .{ position = make_vector3( 0, state.windowHeight, 0 ), color = white, uv = .{ 0, 1 } };
-    vertices[2] = .{ position = make_vector3( state.windowWidth, 0, 0 ), color = white, uv = .{ 1, 0 } };
-
-    vertices[4] = .{ position = make_vector3( state.windowWidth, 0, 0 ), color = white, uv = .{ 1, 0 } };
-    vertices[3] = .{ position = make_vector3( 0, state.windowHeight, 0 ), color = white, uv = .{ 0, 1 } };
-    vertices[5] = .{ position = make_vector3( state.windowWidth, state.windowHeight, 0 ), color = white, uv = .{ 1, 1 } };
-
-    glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
-    glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
-    glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
+    glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
 
     DumpGLErrors( "OpenGLRender" );
 }
@@ -232,18 +231,18 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
 // Draw a text string with the given font by issuing a separate quad per glyph
 OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: LoadedFace )
 {
-    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, vertices: *[6] TextVertex )
+    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, face: LoadedFace, vertices: *[6] TextVertex )
     {
         white :: #run make_vector4( 1, 1, 1, 1 );
         red :: #run make_vector4( 1, 0, 0, 1 );
         green :: #run make_vector4( 0, 1, 0, 1 );
         blue :: #run make_vector4( 0, 0, 1, 1 );
 
-        x := xBase + glyph.bearing.x;
-        y := yBase - glyph.bearing.y; 
+        x := xBase;
+        y := yBase;
 
-        w := glyph.size.x;
-        h := glyph.size.y;
+        w := face.advance;
+        h := face.lineHeight;
 
         s := cast(float) TEX_ATLAS_SIZE;
         u0 := glyph.offset.x / s;
@@ -265,7 +264,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
 
     glActiveTexture( GL_TEXTURE0 );
     glUseProgram( state.testShader.program );    
-    glUniform1i( state.testShader.textSamplerUni, 0 );
+    glUniform1i( state.testShader.glyphSamplerUni, 0 );
 
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
@@ -280,7 +279,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
-        DrawLetterQuad( <<c, xBase, yBase, <<glyph, *vertices );
+        DrawLetterQuad( <<c, xBase, yBase, <<glyph, face, *vertices );
 
         glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
         glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
@@ -297,7 +296,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
 OpenGLDrawAtlas :: ( state: *OpenGLState, face: LoadedFace )
 {
     glUseProgram( state.testShader.program );    
-    glUniform1i( state.testShader.textSamplerUni, 0 );
+    glUniform1i( state.testShader.glyphSamplerUni, 0 );
 
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
@@ -354,7 +353,7 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 
     glActiveTexture( GL_TEXTURE0 );
     glBindTexture( GL_TEXTURE_2D, state.whiteTextureHandle );  // Bind handle to slot 0.
-    glUniform1i( state.testShader.textSamplerUni, 0 );
+    glUniform1i( state.testShader.glyphSamplerUni, 0 );
 
     DumpGLErrors( "frame setup" );
 
@@ -419,35 +418,30 @@ TextVertex :: struct
     uv:         Vector2;
 }
 
-v2 :: Vector2;
-v2s :: struct
-{
-    x, y : s32;
-}
-v2u :: struct
-{
-    x, y : u32;
-}
-
 Shader :: struct
 {
     program : GLuint;
+}
+TestShader :: struct
+{
+    using shader: Shader;
 
     positionAttrib : GLint;
     colorAttrib : GLint;
     uvAttrib : GLint;
 
     projectionUni : GLint;
-    textSamplerUni : GLint;
+    glyphSamplerUni : GLint;
 }
 GridShader :: struct
 {
     using shader: Shader;
 
-    constantsBlockUni: GLuint;
+    glyphSamplerUni :      GLint;
+    constantsBlockUni:     GLuint;
     constantsBufferHandle: GLuint;
-    cellsBlockUni: GLuint;
-    cellsBufferHandle : GLuint;
+    cellsBlockUni:         GLuint;
+    cellsBufferHandle:     GLuint;
 }
 
 Glyph :: struct
@@ -517,22 +511,19 @@ BuildGridShaderProgram :: ( shader: *GridShader ) -> bool
 {
 GRID_SHADER :: #string END
 
-OUT_IN vec2 TextureCoords;
-OUT_IN vec4 iterated_color;
-
-
 #ifdef VERTEX_SHADER
 
-in vec4 vert_position;
-in vec4 vert_color;
-in vec2 vert_uv0;
-
-uniform mat4 projection;
-
-void main() {
-    gl_Position     = projection * vec4(vert_position.xy, 0.0, 1.0);
-    iterated_color  = vert_color;
-    TextureCoords   = vert_uv0;
+const vec2 positions[4] = vec2[](
+    vec2(-1, -1),
+    vec2(+1, -1),
+    vec2(-1, +1),
+    vec2(+1, +1)
+);
+void main()
+{
+    // Emit hardcoded positions for the 4 corners of the window
+    // This assumes we're invoking this with a GL_TRIANGLE_STRIP call (and a count of 4)
+    gl_Position = vec4( positions[gl_VertexID], 0.0, 1.0 );
 }
 
 #endif // VERTEX_SHADER
@@ -543,19 +534,22 @@ void main() {
 layout(origin_upper_left) in vec4 gl_FragCoord;
 out vec4 color;
 
-uniform sampler2D text_sampler;
-//uniform vec4 text_color;
+uniform sampler2D glyphSampler;
 
 layout (std140) uniform ConstantsBlock
 {
-    ivec2 topLeftMargin;
+    ivec2 windowDim;
     ivec2 cellSize;
     ivec2 cellCount;
+    ivec2 borderDim;
+    uint borderColor;
 };
 
 struct Cell
 {
     uint glyphIndex;
+    // NOTE Colors are always considered sRGB. Cannot do the linear conversion on the CPU while still keeping them packed
+    // See https://blog.demofox.org/2018/03/10/dont-convert-srgb-u8-to-linear-u8/
     uint foregroundColor;
     uint backgroundColor;
     uint _padding;
@@ -582,13 +576,32 @@ vec3 UnpackColor(uint packedColor)
     return vec3(r, g, b) / 255.0;
 }
 
+// TODO We could make this value a program setting.
+// According to https://www.puredevsoftware.com/blog/2019/01/22/sub-pixel-gamma-correct-font-rendering/ and
+// https://freetype.org/freetype2/docs/reference/ft2-base_interface.html, it seems to be more optimal to go below the standard 2.2 power curve
+//const vec3 gamma = vec3( 2.2 );
+
+// For now go with the "Adobe tested" value (pass it as a uniform to quickly compare a few values)
+const vec3 gamma = vec3( 1.8 );
+const vec3 oneOverGamma = vec3( 1.0 / gamma );
+
+vec3 ColorToLinear( vec3 gammaColor )
+{
+    return pow( gammaColor, gamma );
+}
+vec3 ColorToGamma( vec3 linearColor )
+{
+    return pow( linearColor, oneOverGamma );
+}
+
 void main ()
 {
+    // Compute what the top left margin must be so the bottom left is kept constant
+    ivec2 topLeftMargin = ivec2( borderDim.x, windowDim.y - cellCount.y*cellSize.y - borderDim.y );
     ivec2 cellIndex = ivec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
     ivec2 cellPos = ivec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
 
     vec3 result;
-    // TODO cellIndex >= 0 doesnt work here??
     if( (gl_FragCoord.x >= topLeftMargin.x) &&
         (gl_FragCoord.y >= topLeftMargin.y) &&
         (cellIndex.x < cellCount.x) &&
@@ -597,25 +610,30 @@ void main ()
         Cell cell = cells[cellIndex.y * cellCount.x + cellIndex.x];
         ivec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
 
-        vec2 pixelPos = vec2( glyphPos + cellPos );
-        vec4 glyphTexel = texture(text_sampler, pixelPos / 1024);
+        vec2 atlasPos = vec2( glyphPos + cellPos );
+        vec4 glyphTexel = texture(glyphSampler, atlasPos / 1024);
 
-        vec3 background = UnpackColor( cell.backgroundColor );
-        vec3 foreground = UnpackColor( cell.foregroundColor );
+        vec3 background = ColorToLinear( UnpackColor( cell.backgroundColor ) );
+        vec3 foreground = ColorToLinear( UnpackColor( cell.foregroundColor ) );
         //vec3 Blink = UnpackColor(BlinkModulate);
 
         //if((cell.foreground >> 28) & 1) foreground *= Blink;
         //if((cell.foreground >> 25) & 1) foreground *= 0.5;
 
-        // TODO proper ClearType blending
+        // TODO Sub-pixel rendering
+        // https://www.puredevsoftware.com/blog/2019/01/22/sub-pixel-gamma-correct-font-rendering/
+        // More reading: https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
+        // https://freetype.org/freetype2/docs/hinting/text-rendering-general.html
+
         // 1-channel texture so alpha is in the r component
         result = (1 - glyphTexel.r) * background + glyphTexel.r * foreground;
-        //if (sample.r < .3)  discard;
+        // Gamma encode it again for presentation
+        result = ColorToGamma( result );
     }
     else
     {
-        // TODO: margin color
-        result = vec3( 0.1, 0.1, 0.3 );
+        result = UnpackColor( borderColor );
+        //result = vec3( 0.15, 0.15, 0.2 );
     }
 
     color = vec4( result, 1 );
@@ -651,40 +669,9 @@ END
     shader.program = program;
     glUseProgram( shader.program );    
 
-    textVertex: *TextVertex: null;
-    shader.positionAttrib = glGetAttribLocation( program, "vert_position" );
-    if shader.positionAttrib == -1
-        print( "Couldn't bind attribute 'vert_position'\n" );
-    else
-    {
-        glEnableVertexAttribArray( xx shader.positionAttrib );
-        glVertexAttribPointer( xx shader.positionAttrib,    3, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.position );
-    }
-
-    shader.colorAttrib    = glGetAttribLocation( program, "vert_color" );
-    if shader.colorAttrib == -1
-        print( "Couldn't bind attribute 'vert_color'\n" );
-    else
-    {
-        glEnableVertexAttribArray( xx shader.colorAttrib );
-        glVertexAttribPointer( xx shader.colorAttrib,       4, GL_FLOAT, GL_TRUE,  size_of(TextVertex), xx *textVertex.color );
-    }
-
-    shader.uvAttrib       = glGetAttribLocation( program, "vert_uv0" );
-    if shader.uvAttrib == -1
-        print( "Couldn't bind attribute 'vert_uv0'\n" );
-    else
-    {
-        glEnableVertexAttribArray( xx shader.uvAttrib );
-        glVertexAttribPointer( xx shader.uvAttrib,          2, GL_FLOAT, GL_FALSE, size_of(TextVertex), xx *textVertex.uv );
-    }
-
-    shader.projectionUni  = glGetUniformLocation( program, "projection" );
-    if shader.projectionUni == -1
-        print( "Couldn't bind uniform 'projection'\n" );
-    shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
-    if shader.textSamplerUni == -1
-        print( "Couldn't bind uniform 'text_sampler'\n" );
+    shader.glyphSamplerUni = glGetUniformLocation( program, "glyphSampler" );
+    if shader.glyphSamplerUni == -1
+        print( "Couldn't bind uniform 'glyphSampler'\n" );
 
     // Uniform buffer object for constants
     shader.constantsBlockUni = glGetUniformBlockIndex( shader.program, "ConstantsBlock" );
@@ -714,7 +701,7 @@ END
     return true;
 }
 
-BuildTestShaderProgram :: ( shader: *Shader ) -> bool
+BuildTestShaderProgram :: ( shader: *TestShader ) -> bool
 {
 TEST_SHADER :: #string END
 
@@ -740,11 +727,11 @@ void main() {
 #ifdef FRAGMENT_SHADER
 out vec4 color;
 
-uniform sampler2D text_sampler;
+uniform sampler2D glyphSampler;
 uniform vec4 text_color;
 
 void main () {
-    vec4 sample = texture(text_sampler, TextureCoords);
+    vec4 sample = texture(glyphSampler, TextureCoords);
     color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
     if (sample.a < .3)  discard;
 }
@@ -809,9 +796,9 @@ END
     shader.projectionUni  = glGetUniformLocation( program, "projection" );
     if shader.projectionUni == -1
         print( "Couldn't bind uniform 'projection'\n" );
-    shader.textSamplerUni = glGetUniformLocation( program, "text_sampler" );
-    if shader.textSamplerUni == -1
-        print( "Couldn't bind uniform 'text_sampler'\n" );
+    shader.glyphSamplerUni = glGetUniformLocation( program, "glyphSampler" );
+    if shader.glyphSamplerUni == -1
+        print( "Couldn't bind uniform 'glyphSampler'\n" );
 
     DumpGLErrors( "shader" );
 
