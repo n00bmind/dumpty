@@ -22,6 +22,9 @@ OpenGLState :: struct
 
     white : u32;
     whiteTextureHandle : GLuint;
+
+    maxUniformBlockSize: GLint;
+    maxUniformArrayCount: GLint;
 }
 
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
@@ -32,6 +35,17 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 
     gl_load( *gl );
     gl_enable_debug_output( break_on_error = true );
+
+    device: *GLubyte = glGetString( GL_RENDERER );
+    print( "Using device: %\n", to_string( device ) );
+
+    glGetIntegerv( GL_MAX_UNIFORM_BLOCK_SIZE, *state.maxUniformBlockSize );
+    print( "GL_MAX_UNIFORM_BLOCK_SIZE: %\n", state.maxUniformBlockSize );
+    glGetIntegerv( GL_MAX_FRAGMENT_UNIFORM_BLOCKS, *state.maxUniformArrayCount );
+    print( "GL_MAX_FRAGMENT_UNIFORM_BLOCKS: %\n", state.maxUniformArrayCount );
+    // NOTE Cap at 12 + 1 (12 is supposedly the minimum guaranteed by the spec)
+    assert( state.maxUniformArrayCount >= 12 );
+    state.maxUniformArrayCount = 12;
 
     dummyVAO: GLuint;
     glGenVertexArrays( 1, *dummyVAO );
@@ -56,7 +70,7 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     // Bind buffer so shaders can bind their attributes
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
 
-    shaderOk := BuildGridShaderProgram( *state.gridShader );
+    shaderOk := BuildGridShaderProgram( *state.gridShader, <<state );
     assert( shaderOk );
     shaderOk = BuildTestShaderProgram( *state.testShader );
     assert( shaderOk );
@@ -64,6 +78,17 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     return true;
 }
 
+
+LoadedFace :: struct
+{
+    glyphs     : [126-32+1] Glyph;
+    face       : *FT_Face;
+    bbox       : v2s;
+    advance    : s32;
+    lineHeight : s32;
+    descender  : s32;   // Absolute value
+    texture    : u32;
+}
 
 TEX_ATLAS_SIZE :: 1024;
 
@@ -217,6 +242,7 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
     glUniform1i( state.gridShader.glyphSamplerUni, 0 );
 
+    // TODO Compare perf against mapping the buffer and memcpying
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.constantsBufferHandle );
     glBufferSubData( GL_UNIFORM_BUFFER, 0, size_of(RendererState.Constants), *renderer.constants );
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
@@ -440,8 +466,9 @@ GridShader :: struct
     glyphSamplerUni :      GLint;
     constantsBlockUni:     GLuint;
     constantsBufferHandle: GLuint;
-    cellsBlockUni:         GLuint;
+    cellsBlockUni:         [..] GLuint;
     cellsBufferHandle:     GLuint;
+    maxCellCount:          s32;
 }
 
 Glyph :: struct
@@ -450,17 +477,6 @@ Glyph :: struct
     offset:  v2s;
     size:    v2s;
     bearing: v2s;
-}
-
-LoadedFace :: struct
-{
-    glyphs     : [126-32+1] Glyph;
-    face       : *FT_Face;
-    bbox       : v2s;
-    advance    : s32;
-    lineHeight : s32;
-    descender  : s32;   // Absolute value
-    texture    : u32;
 }
 
 
@@ -507,7 +523,7 @@ PREFIX_F :: #string END
 #define OUT_IN in
 END
 
-BuildGridShaderProgram :: ( shader: *GridShader ) -> bool
+BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
 GRID_SHADER :: #string END
 
@@ -545,6 +561,7 @@ layout (std140) uniform ConstantsBlock
     uint borderColor;
 };
 
+// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a minimum sizeof(Cell) of 16!
 struct Cell
 {
     uint glyphIndex;
@@ -555,11 +572,13 @@ struct Cell
     uint _padding;
 };
 
-// TODO This seems to be near the maximum uniform block size for the GTX. Test on old cards!!
+// TODO Given the current size of Cell, this amounts to 12 UBOs of 65536 bytes, which is supposedly the minimum guaranteed by the spec.
+// Test on old cards!!
 layout (std140) uniform CellsBlock
 {
+    // FIXME Pass array count as a constant
     Cell cells[4096];
-};
+} cellPages[12];
 
 ivec2 UnpackGlyphXY( uint packedIndex )
 {
@@ -607,7 +626,39 @@ void main ()
         (cellIndex.x < cellCount.x) &&
         (cellIndex.y < cellCount.y) )
     {
-        Cell cell = cells[cellIndex.y * cellCount.x + cellIndex.x];
+        int idx = cellIndex.y * cellCount.x + cellIndex.x;
+    // FIXME Pass constant
+        int cellPage = idx >> 12;
+        int indexInPage = idx & 4095;
+
+    // TODO This is shit obviously. Compare against a TBO
+        Cell cell;
+    //cell = cells[cellIndex.y * cellCount.x + cellIndex.x];
+        if( cellPage == 0 )
+            cell = cellPages[0].cells[indexInPage];
+        else if( cellPage == 1 )
+            cell = cellPages[1].cells[indexInPage];
+        else if( cellPage == 2 )
+            cell = cellPages[2].cells[indexInPage];
+        else if( cellPage == 3 )
+            cell = cellPages[3].cells[indexInPage];
+        else if( cellPage == 4 )
+            cell = cellPages[4].cells[indexInPage];
+        else if( cellPage == 5 )
+            cell = cellPages[5].cells[indexInPage];
+        else if( cellPage == 6 )
+            cell = cellPages[6].cells[indexInPage];
+        else if( cellPage == 7 )
+            cell = cellPages[7].cells[indexInPage];
+        else if( cellPage == 8 )
+            cell = cellPages[8].cells[indexInPage];
+        else if( cellPage == 9 )
+            cell = cellPages[9].cells[indexInPage];
+        else if( cellPage == 10 )
+            cell = cellPages[10].cells[indexInPage];
+        else if( cellPage == 11 )
+            cell = cellPages[11].cells[indexInPage];
+
         ivec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
 
         vec2 atlasPos = vec2( glyphPos + cellPos );
@@ -685,16 +736,39 @@ END
     glBufferData( GL_UNIFORM_BUFFER, size_of(RendererState.Constants), null, GL_STREAM_DRAW );
     glBindBufferBase( GL_UNIFORM_BUFFER, 0, shader.constantsBufferHandle );
 
-    // Uniform buffer object for cells
-    shader.cellsBlockUni = glGetUniformBlockIndex( shader.program, "CellsBlock" );
-    assert( shader.cellsBlockUni != GL_INVALID_INDEX );
-    glUniformBlockBinding( shader.program, shader.cellsBlockUni, 1 );
-    // And its buffer
+    IsPowerOfTwo :: (x: int) -> bool
+    {
+        return (x & (x - 1)) == 0;
+    }
+    // Uniform buffer objects for cells
+    cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
+    assert( IsPowerOfTwo( cellsPerPage ) );
+    // We already used a block for the ConstantsBlock above
+    // TODO Dont use a block for the constants so we can use the full range here
+    cellPageCount := state.maxUniformArrayCount - 1;
+    // TODO Cap minimum font size based on this!
+    shader.maxCellCount = cellPageCount * cellsPerPage;
+    print( "Max supported cell count: % (in % pages)\n", shader.maxCellCount, cellPageCount );
+
+    // Create a single buffer to map across all of them
     glGenBuffers( 1, *shader.cellsBufferHandle );
     glBindBuffer( GL_UNIFORM_BUFFER, shader.cellsBufferHandle );
-    // FIXME Define max cells properly and pass it to the shader code
-    glBufferData( GL_UNIFORM_BUFFER, 4096 * size_of(RendererCell), null, GL_STREAM_DRAW );
-    glBindBufferBase( GL_UNIFORM_BUFFER, 1, shader.cellsBufferHandle );
+    glBufferData( GL_UNIFORM_BUFFER, shader.maxCellCount * size_of(RendererCell), null, GL_STREAM_DRAW );
+
+    // Map the individual pages
+    bufferOffset := 0;
+    pageSize := cellsPerPage * size_of(RendererCell);
+    for 0..cellPageCount-1
+    {
+        blockName := tprint( "CellsBlock[%]\0", it );
+        array_add( *shader.cellsBlockUni, glGetUniformBlockIndex( shader.program, blockName.data ) );
+        assert( shader.cellsBlockUni[it] != GL_INVALID_INDEX );
+
+        bindingIdx := cast(GLuint)(it + 1);
+        glUniformBlockBinding( shader.program, shader.cellsBlockUni[it], bindingIdx );
+        glBindBufferRange( GL_UNIFORM_BUFFER, bindingIdx, shader.cellsBufferHandle, bufferOffset, pageSize );
+        bufferOffset += pageSize;
+    }
 
     DumpGLErrors( "shader" );
 

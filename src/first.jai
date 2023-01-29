@@ -25,10 +25,10 @@ glState: OpenGLState;
 
 test : () -> string = null;
 
-#program_export
+//#program_export
 
-NvOptimusEnablement : DWORD = 0x01;
-AmdPowerXpressRequestHighPerformance : DWORD = 0x01;
+//NvOptimusEnablement : DWORD = 0x01;
+//AmdPowerXpressRequestHighPerformance : DWORD = 0x01;
 
 #scope_export
 
@@ -69,40 +69,78 @@ main :: ()
     windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
     //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
 
-
-    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 30 );
+    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 10 );
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
         exit( 1 );
     }
 
-    // TODO All this must be dynamic
-    renderer : RendererState;
-    renderer.windowDim = .{ windowWidth, windowHeight };
-    renderer.cellSize = .{ loadedFace.advance, loadedFace.lineHeight };
-    renderer.cellCount.x = 25;
-    renderer.cellCount.y = 15;
-    renderer.borderDim = .{ 10, 10 };
-    renderer.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
-
-    cells, _ := NewArray( renderer.cellCount.x * renderer.cellCount.y, RendererCell );
-    glyphA := loadedFace.glyphs[ #char "A" - 32 ];
-    fg := PackColor( .{ 1, 1, 1 } );
-    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
-    for * cells
-    {
-        it.glyphIndex = cast(u32)((glyphA.index.y << 16) | glyphA.index.x);
-        it.foregroundColor = fg;
-        it.backgroundColor = bg;
-    }
-    renderer.cells = cells;
+    lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
+    assert( success2 );
 
 
     app : HMODULE;
     app_modtime : Apollo_Time;
     app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
     temp_dll_ord := 0;
+
+    ResetRenderer :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, contents: string, maxCellCount: s32 )
+    {
+        state.windowDim = .{ windowWidth, windowHeight };
+        state.borderDim = .{ 10, 6 };
+        state.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
+        state.cellSize = .{ face.advance, face.lineHeight };
+        state.cellCount.x = (windowWidth - 2 * state.borderDim.x) / state.cellSize.x;
+        state.cellCount.y = (windowHeight - 2 * state.borderDim.y) / state.cellSize.y;
+
+        totalCellCount := state.cellCount.x * state.cellCount.y;
+        print( "Allocated cell count: %\n", totalCellCount );
+        assert( totalCellCount < maxCellCount, "Need % cells, but the maximum is %", totalCellCount, maxCellCount );
+
+        fg := PackColor( .{ 1, 1, 1 } );
+        bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+        cells, _ := NewArray( state.cellCount.x * state.cellCount.y, RendererCell );
+
+        c := 0;
+        for row: 0..state.cellCount.y - 1
+        {
+            inLineBreak := false;
+            for col: 0..state.cellCount.x - 1
+            {
+                if c >= contents.count
+                    break row;
+
+                cell := *cells[ row * state.cellCount.x + col ];
+                cell.foregroundColor = fg;
+                cell.backgroundColor = bg;
+
+                char := contents[c];
+                if char == #char "\r"
+                {
+                    c += 1;
+                    continue;
+                }
+                else if char == #char "\n"
+                {
+                    c += 1;
+                    inLineBreak = true;
+                }
+
+                glyph := ifx inLineBreak face.glyphs[0] else face.glyphs[ char - 32 ];
+                cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+
+                if !inLineBreak
+                    c += 1;
+            }
+        }
+
+        free( state.cells.data );
+        state.cells = cells;
+    }
+
+    renderer : RendererState;
+    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, lipsumData, glState.gridShader.maxCellCount );
 
     quit := false;
     while !quit
@@ -148,9 +186,11 @@ main :: ()
 
                 if sizeChanged
                 {
+                    // TODO Only allow size increments that are coherent with the cell size & borders
                     windowWidth  = it.width;
                     windowHeight = it.height;
 
+                    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, lipsumData, glState.gridShader.maxCellCount );
                     //print( "New window dimensions: %, %\n", windowWidth, windowHeight );
                 }
                 //if sizeChanged my_init_fonts();  // Resize the font for the new window size.
