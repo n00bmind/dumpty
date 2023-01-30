@@ -8,6 +8,7 @@
 #import "Window_Creation";
 #import "Input";
 #import "File_Utilities";
+#import "Windows_Utf8";
 
 #if OS == .WINDOWS {
     #import "Windows";
@@ -85,7 +86,7 @@ main :: ()
     app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
     temp_dll_ord := 0;
 
-    ResetRenderer :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, contents: string, maxCellCount: s32 )
+    ResetRenderer :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, maxCellCount: s32 )
     {
         state.windowDim = .{ windowWidth, windowHeight };
         state.borderDim = .{ 10, 6 };
@@ -98,9 +99,15 @@ main :: ()
         print( "Allocated cell count: %\n", totalCellCount );
         assert( totalCellCount < maxCellCount, "Need % cells, but the maximum is %", totalCellCount, maxCellCount );
 
+        free( state.cells.data );
+        base: *void;
+        state.cells, base = NewArray( state.cellCount.x * state.cellCount.y, RendererCell );
+    }
+
+    UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, contents: string )
+    {
         fg := PackColor( .{ 1, 1, 1 } );
         bg := PackColor( .{ 0.15, 0.15, 0.2 } );
-        cells, _ := NewArray( state.cellCount.x * state.cellCount.y, RendererCell );
 
         c := 0;
         for row: 0..state.cellCount.y - 1
@@ -108,12 +115,12 @@ main :: ()
             inLineBreak := false;
             for col: 0..state.cellCount.x - 1
             {
-                if c >= contents.count
-                    break row;
-
-                cell := *cells[ row * state.cellCount.x + col ];
+                cell := *state.cells[ row * state.cellCount.x + col ];
                 cell.foregroundColor = fg;
                 cell.backgroundColor = bg;
+
+                if c >= contents.count
+                    continue;
 
                 char := contents[c];
                 if char == #char "\r"
@@ -134,15 +141,14 @@ main :: ()
                     c += 1;
             }
         }
-
-        free( state.cells.data );
-        state.cells = cells;
     }
 
     renderer : RendererState;
-    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, lipsumData, glState.gridShader.maxCellCount );
+    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
 
     quit := false;
+    frameCount := 0;
+    lastTitleUpdateTimestamp: float64 = 0;
     while !quit
     {
         // Check whether we need to load app entry points from the DLL
@@ -190,7 +196,7 @@ main :: ()
                     windowWidth  = it.width;
                     windowHeight = it.height;
 
-                    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, lipsumData, glState.gridShader.maxCellCount );
+                    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
                     //print( "New window dimensions: %, %\n", windowWidth, windowHeight );
                 }
                 //if sizeChanged my_init_fonts();  // Resize the font for the new window size.
@@ -224,9 +230,26 @@ main :: ()
 
         //OpenGLDrawAtlas( *glState, loadedFace );
 
+        UpdateRendererCells( *renderer, loadedFace, lipsumData );
         OpenGLRender( *glState, loadedFace, renderer );
 
         Swap( mainWindow );
+
+        frameCount += 1;
+        // TODO Non-release
+        now := get_time();
+        if now > lastTitleUpdateTimestamp + 0.5
+        {
+            elapsedSecs := (now - lastTitleUpdateTimestamp);
+            avgPerFrame := elapsedSecs / frameCount;
+            text, success, lenBytes :=
+                utf8_to_wide( tprint( "% frames in %s. Avg. %ms. (% fps)\0", frameCount, elapsedSecs,
+                                      formatFloat( avgPerFrame * 1000, -1, 3 ), formatFloat( 1 / avgPerFrame, -1, 2 ) ) );
+            SetWindowTextW( mainWindow, text );
+
+            lastTitleUpdateTimestamp = now;
+            frameCount = 0;
+        }
     }
 
     exit( 0 );
