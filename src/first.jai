@@ -101,7 +101,7 @@ main :: ()
 
         free( state.cells.data );
         base: *void;
-        state.cells, base = NewArray( state.cellCount.x * state.cellCount.y, RendererCell );
+        state.cells, base = NewArray( totalCellCount, RendererCell );
     }
 
     UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, contents: string )
@@ -109,36 +109,38 @@ main :: ()
         fg := PackColor( .{ 1, 1, 1 } );
         bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
-        c := 0;
+        srcIndex := 0;
+        dst := state.cells.data;
         for row: 0..state.cellCount.y - 1
         {
             inLineBreak := false;
             for col: 0..state.cellCount.x - 1
             {
-                cell := *state.cells[ row * state.cellCount.x + col ];
-                cell.foregroundColor = fg;
-                cell.backgroundColor = bg;
+                defer dst += 1;
 
-                if c >= contents.count
+                dst.foregroundColor = fg;
+                dst.backgroundColor = bg;
+
+                if srcIndex >= contents.count
                     continue;
 
-                char := contents[c];
+                char := contents[srcIndex];
                 if char == #char "\r"
                 {
-                    c += 1;
+                    srcIndex += 1;
                     continue;
                 }
                 else if char == #char "\n"
                 {
-                    c += 1;
+                    srcIndex += 1;
                     inLineBreak = true;
                 }
 
                 glyph := ifx inLineBreak face.glyphs[0] else face.glyphs[ char - 32 ];
-                cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
 
                 if !inLineBreak
-                    c += 1;
+                    srcIndex += 1;
             }
         }
     }
@@ -234,6 +236,8 @@ main :: ()
         OpenGLRender( *glState, loadedFace, renderer );
 
         Swap( mainWindow );
+
+        reset_temporary_storage();
 
         frameCount += 1;
         // TODO Non-release

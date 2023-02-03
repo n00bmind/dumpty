@@ -25,6 +25,7 @@ OpenGLState :: struct
 
     maxUniformBlockSize: GLint;
     maxUniformArrayCount: GLint;
+    maxTextureBufferSize: GLint;
 }
 
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
@@ -46,6 +47,8 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     // NOTE Cap at 12 + 1 (12 is supposedly the minimum guaranteed by the spec)
     assert( state.maxUniformArrayCount >= 12 );
     state.maxUniformArrayCount = 12;
+    glGetIntegerv( GL_MAX_TEXTURE_BUFFER_SIZE, *state.maxTextureBufferSize );
+    print( "GL_MAX_TEXTURE_BUFFER_SIZE: %\n", state.maxTextureBufferSize );
 
     dummyVAO: GLuint;
     glGenVertexArrays( 1, *dummyVAO );
@@ -225,6 +228,9 @@ RendererState :: struct
     using constants : Constants;
 }
 
+
+USE_TEXTURE_BUFFER :: true;
+
 OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState )
 {
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
@@ -242,11 +248,20 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
     glUniform1i( state.gridShader.glyphSamplerUni, 0 );
 
-    // TODO Compare perf against mapping the buffer and memcpying
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.constantsBufferHandle );
     glBufferSubData( GL_UNIFORM_BUFFER, 0, size_of(RendererState.Constants), *renderer.constants );
-    glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
-    glBufferSubData( GL_UNIFORM_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
+
+    #if USE_TEXTURE_BUFFER
+    {
+        glBindBuffer( GL_TEXTURE_BUFFER, state.gridShader.cellsBufferHandle );
+        // This was faster than mapping the buffer & memcpying in the tests
+        glBufferSubData( GL_TEXTURE_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
+    }
+    else
+    {
+        glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
+        glBufferSubData( GL_UNIFORM_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
+    }
 
     glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
 
@@ -433,8 +448,7 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 #scope_file
 
 #import "Math";
-// TODO Enable this after the jai update
-#import "GL"; //( DUMP_GL_ERRORS = true );
+#import "GL" ( DUMP_GL_ERRORS = true );
 #import "freetype-2.12.1";
 
 TextVertex :: struct
@@ -468,6 +482,8 @@ GridShader :: struct
     constantsBufferHandle: GLuint;
     cellsBlockUni:         [..] GLuint;
     cellsBufferHandle:     GLuint;
+    cellsSamplerUni:       GLint;
+    cellsTexture:          GLuint;
     maxCellCount:          s32;
 }
 
@@ -482,19 +498,33 @@ Glyph :: struct
 
 LOG_BUFFER_SIZE :: 512;
 
-CreateAndCompileShader :: ( shaderString: string, prefix: string, shaderType : GLenum ) -> GLuint
+PREFIX_V :: #string END
+#version 330 core
+#define VERTEX_SHADER
+#define OUT_IN out
+END
+
+PREFIX_F :: #string END
+#version 330 core
+#define FRAGMENT_SHADER
+#define OUT_IN in
+END
+
+CreateAndCompileShader :: ( shaderType : GLenum, shaderString: string, prefix: string, header: string = "" ) -> GLuint
 {
     shaderObj := glCreateShader( shaderType );
 
-    shaders: [2] *u8;
-    lengths: [2] s32;
+    shaders: [3] *u8;
+    lengths: [3] s32;
 
     shaders[0] = prefix.data;
-    shaders[1] = shaderString.data;
+    shaders[1] = header.data;
+    shaders[2] = shaderString.data;
     lengths[0] = xx prefix.count;
-    lengths[1] = xx shaderString.count;
+    lengths[1] = xx header.count;
+    lengths[2] = xx shaderString.count;
 
-    glShaderSource( shaderObj, 2, shaders.data, lengths.data );
+    glShaderSource( shaderObj, 3, shaders.data, lengths.data );
     glCompileShader( shaderObj );
 
     success : GLint;
@@ -510,18 +540,6 @@ CreateAndCompileShader :: ( shaderString: string, prefix: string, shaderType : G
 
     return shaderObj;
 }
-
-PREFIX_V :: #string END
-#version 330 core
-#define VERTEX_SHADER
-#define OUT_IN out
-END
-
-PREFIX_F :: #string END
-#version 330 core
-#define FRAGMENT_SHADER
-#define OUT_IN in
-END
 
 BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
@@ -547,10 +565,15 @@ void main()
 
 #ifdef FRAGMENT_SHADER
 
+// Passed from outside code
+#define CELLS_PER_PAGE (1 << CELLS_PER_PAGE_BITS)
+#define CELLS_PER_PAGE_MASK (CELLS_PER_PAGE - 1)
+
 layout(origin_upper_left) in vec4 gl_FragCoord;
 out vec4 color;
 
 uniform sampler2D glyphSampler;
+uniform usamplerBuffer cellsSampler;
 
 layout (std140) uniform ConstantsBlock
 {
@@ -572,13 +595,13 @@ struct Cell
     uint _padding;
 };
 
-// TODO Given the current size of Cell, this amounts to 12 UBOs of 65536 bytes, which is supposedly the minimum guaranteed by the spec.
-// Test on old cards!!
+// This amounts to 12 UBOs of 65536 bytes, which is supposedly the minimum guaranteed by the spec.
+// TODO Test on old cards!!
 layout (std140) uniform CellsBlock
 {
-    // FIXME Pass array count as a constant
-    Cell cells[4096];
+    Cell cells[CELLS_PER_PAGE];
 } cellPages[12];
+
 
 ivec2 UnpackGlyphXY( uint packedIndex )
 {
@@ -613,6 +636,58 @@ vec3 ColorToGamma( vec3 linearColor )
     return pow( linearColor, oneOverGamma );
 }
 
+
+Cell CellFromTextureIndex( ivec2 cellIndex )
+{
+    int idx = cellIndex.y * cellCount.x + cellIndex.x;
+    uvec4 value = texelFetch( cellsSampler, idx );
+
+    Cell cell = Cell( value.r, value.g, value.b, value.a );
+    return cell;
+}
+
+// Previous path using a collection of contiguously-mapped uniform blocks
+// Doesn't seem to offer any speed advantage (most likely due to the limitation of using a constant expression to index them)
+// and moreover it may still be insufficient for fullscreen windows with a small font size
+Cell CellFromBufferIndex( ivec2 cellIndex )
+{
+    int idx = cellIndex.y * cellCount.x + cellIndex.x;
+    int cellPage = idx >> CELLS_PER_PAGE_BITS;
+    int indexInPage = idx & CELLS_PER_PAGE_MASK;
+
+    Cell cell;
+    // HACK Apparently you can only index an array of blocks using a constant expression, so.. yeah..
+    if( cellPage == 0 )
+        cell = cellPages[0].cells[indexInPage];
+    else if( cellPage == 1 )
+        cell = cellPages[1].cells[indexInPage];
+    else if( cellPage == 2 )
+        cell = cellPages[2].cells[indexInPage];
+    else if( cellPage == 3 )
+        cell = cellPages[3].cells[indexInPage];
+    else if( cellPage == 4 )
+        cell = cellPages[4].cells[indexInPage];
+    else if( cellPage == 5 )
+        cell = cellPages[5].cells[indexInPage];
+    else if( cellPage == 6 )
+        cell = cellPages[6].cells[indexInPage];
+    else if( cellPage == 7 )
+        cell = cellPages[7].cells[indexInPage];
+    else if( cellPage == 8 )
+        cell = cellPages[8].cells[indexInPage];
+    else if( cellPage == 9 )
+        cell = cellPages[9].cells[indexInPage];
+    else if( cellPage == 10 )
+        cell = cellPages[10].cells[indexInPage];
+    else if( cellPage == 11 )
+        cell = cellPages[11].cells[indexInPage];
+
+    // TODO Just so its easy to see when we're using this path
+    cell.foregroundColor = 0xFF0000u;
+    return cell;
+}
+
+
 void main ()
 {
     // Compute what the top left margin must be so the bottom left is kept constant
@@ -626,38 +701,11 @@ void main ()
         (cellIndex.x < cellCount.x) &&
         (cellIndex.y < cellCount.y) )
     {
-        int idx = cellIndex.y * cellCount.x + cellIndex.x;
-    // FIXME Pass constant
-        int cellPage = idx >> 12;
-        int indexInPage = idx & 4095;
-
-    // TODO This is shit obviously. Compare against a TBO
-        Cell cell;
-    //cell = cells[cellIndex.y * cellCount.x + cellIndex.x];
-        if( cellPage == 0 )
-            cell = cellPages[0].cells[indexInPage];
-        else if( cellPage == 1 )
-            cell = cellPages[1].cells[indexInPage];
-        else if( cellPage == 2 )
-            cell = cellPages[2].cells[indexInPage];
-        else if( cellPage == 3 )
-            cell = cellPages[3].cells[indexInPage];
-        else if( cellPage == 4 )
-            cell = cellPages[4].cells[indexInPage];
-        else if( cellPage == 5 )
-            cell = cellPages[5].cells[indexInPage];
-        else if( cellPage == 6 )
-            cell = cellPages[6].cells[indexInPage];
-        else if( cellPage == 7 )
-            cell = cellPages[7].cells[indexInPage];
-        else if( cellPage == 8 )
-            cell = cellPages[8].cells[indexInPage];
-        else if( cellPage == 9 )
-            cell = cellPages[9].cells[indexInPage];
-        else if( cellPage == 10 )
-            cell = cellPages[10].cells[indexInPage];
-        else if( cellPage == 11 )
-            cell = cellPages[11].cells[indexInPage];
+    #if USE_TEXTURE_BUFFER
+        Cell cell = CellFromTextureIndex( cellIndex );
+    #else
+        Cell cell = CellFromBufferIndex( cellIndex );
+    #endif
 
         ivec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
 
@@ -693,8 +741,37 @@ void main ()
 #endif // FRAGMENT_SHADER
 END
 
-    vShader := CreateAndCompileShader( GRID_SHADER, PREFIX_V, GL_VERTEX_SHADER );
-    fShader := CreateAndCompileShader( GRID_SHADER, PREFIX_F, GL_FRAGMENT_SHADER );
+    builder: String_Builder;
+    builder.allocator = temp;
+    init_string_builder( *builder );
+
+    // TODO Move to our own math module
+    IsPowerOfTwo :: (x: int) -> bool
+    {
+        return (x & (x - 1)) == 0;
+    }
+    log2 :: ( n: s32 ) -> s32
+    {
+        assert( n > 0 );
+
+        result: s32;
+        if n >> 16  { n >>= 16; result += 16; }
+        if n >> 8  { n >>= 8; result += 8; }
+        if n >> 4  { n >>= 4; result += 4; }
+        if n >> 2  { n >>= 2; result += 2; }
+        if n >> 1  { n >>= 1; result += 1; }
+
+        return result;
+    }
+
+    // Build a header with some defines
+    cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
+    assert( IsPowerOfTwo( cellsPerPage ) );
+    append( *builder, tprint( "#define USE_TEXTURE_BUFFER %\n", ifx USE_TEXTURE_BUFFER then 1 else 0 ) );
+    append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", log2( cellsPerPage ) ) );
+
+    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, GRID_SHADER, PREFIX_V );
+    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, GRID_SHADER, PREFIX_F, builder_to_string( *builder ) );
     if !vShader || !fShader
         return false;
 
@@ -736,38 +813,53 @@ END
     glBufferData( GL_UNIFORM_BUFFER, size_of(RendererState.Constants), null, GL_STREAM_DRAW );
     glBindBufferBase( GL_UNIFORM_BUFFER, 0, shader.constantsBufferHandle );
 
-    IsPowerOfTwo :: (x: int) -> bool
+    #if USE_TEXTURE_BUFFER
     {
-        return (x & (x - 1)) == 0;
+        MAX_TEXTURE_CELLS :: 128 * 1024;
+        // Arbitrarily limit the max size just so that our buffer is not hundreds of Mb big
+        shader.maxCellCount = min( state.maxTextureBufferSize / size_of(RendererCell), MAX_TEXTURE_CELLS );
+        print( "Max supported cell count (TBO): %\n", shader.maxCellCount );
+
+        glGenBuffers( 1, *shader.cellsBufferHandle );
+        glBindBuffer( GL_TEXTURE_BUFFER, shader.cellsBufferHandle );
+        glBufferData( GL_TEXTURE_BUFFER, shader.maxCellCount * size_of(RendererCell), null, GL_STREAM_DRAW );
+
+        glGenTextures( 1, *shader.cellsTexture );
+        glActiveTexture( GL_TEXTURE1 );
+        glBindTexture( GL_TEXTURE_BUFFER, shader.cellsTexture );
+        glTexBuffer( GL_TEXTURE_BUFFER, GL_RGBA32UI, shader.cellsBufferHandle );
+
+        shader.cellsSamplerUni = glGetUniformLocation( shader.program, "cellsSampler" );
+        glUniform1i( shader.cellsSamplerUni, 1 );
     }
-    // Uniform buffer objects for cells
-    cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
-    assert( IsPowerOfTwo( cellsPerPage ) );
-    // We already used a block for the ConstantsBlock above
-    // TODO Dont use a block for the constants so we can use the full range here
-    cellPageCount := state.maxUniformArrayCount - 1;
-    // TODO Cap minimum font size based on this!
-    shader.maxCellCount = cellPageCount * cellsPerPage;
-    print( "Max supported cell count: % (in % pages)\n", shader.maxCellCount, cellPageCount );
-
-    // Create a single buffer to map across all of them
-    glGenBuffers( 1, *shader.cellsBufferHandle );
-    glBindBuffer( GL_UNIFORM_BUFFER, shader.cellsBufferHandle );
-    glBufferData( GL_UNIFORM_BUFFER, shader.maxCellCount * size_of(RendererCell), null, GL_STREAM_DRAW );
-
-    // Map the individual pages
-    bufferOffset := 0;
-    pageSize := cellsPerPage * size_of(RendererCell);
-    for 0..cellPageCount-1
+    else
     {
-        blockName := tprint( "CellsBlock[%]\0", it );
-        array_add( *shader.cellsBlockUni, glGetUniformBlockIndex( shader.program, blockName.data ) );
-        assert( shader.cellsBlockUni[it] != GL_INVALID_INDEX );
+        // Uniform buffer objects for cells
+        // We already used a block for the ConstantsBlock above
+        cellPageCount := state.maxUniformArrayCount - 1;
+        // TODO Cap minimum font size based on this!
+        shader.maxCellCount = cellPageCount * cellsPerPage;
+        print( "Max supported cell count (UBO): % (in % pages)\n", shader.maxCellCount, cellPageCount );
 
-        bindingIdx := cast(GLuint)(it + 1);
-        glUniformBlockBinding( shader.program, shader.cellsBlockUni[it], bindingIdx );
-        glBindBufferRange( GL_UNIFORM_BUFFER, bindingIdx, shader.cellsBufferHandle, bufferOffset, pageSize );
-        bufferOffset += pageSize;
+        // Create a single buffer to map across all of them
+        glGenBuffers( 1, *shader.cellsBufferHandle );
+        glBindBuffer( GL_UNIFORM_BUFFER, shader.cellsBufferHandle );
+        glBufferData( GL_UNIFORM_BUFFER, shader.maxCellCount * size_of(RendererCell), null, GL_STREAM_DRAW );
+
+        // Map the individual pages
+        bufferOffset := 0;
+        pageSize := cellsPerPage * size_of(RendererCell);
+        for 0..cellPageCount-1
+        {
+            blockName := tprint( "CellsBlock[%]\0", it );
+            array_add( *shader.cellsBlockUni, glGetUniformBlockIndex( shader.program, blockName.data ) );
+            assert( shader.cellsBlockUni[it] != GL_INVALID_INDEX );
+
+            bindingIdx := cast(GLuint)(it + 1);
+            glUniformBlockBinding( shader.program, shader.cellsBlockUni[it], bindingIdx );
+            glBindBufferRange( GL_UNIFORM_BUFFER, bindingIdx, shader.cellsBufferHandle, bufferOffset, pageSize );
+            bufferOffset += pageSize;
+        }
     }
 
     DumpGLErrors( "shader" );
@@ -812,8 +904,8 @@ void main () {
 #endif // FRAGMENT_SHADER
 END
 
-    vShader := CreateAndCompileShader( TEST_SHADER, PREFIX_V, GL_VERTEX_SHADER );
-    fShader := CreateAndCompileShader( TEST_SHADER, PREFIX_F, GL_FRAGMENT_SHADER );
+    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, TEST_SHADER, PREFIX_V );
+    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, TEST_SHADER, PREFIX_F );
     if !vShader || !fShader
         return false;
 
