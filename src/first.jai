@@ -386,6 +386,7 @@ main :: ()
 
         UpdateRendererCells( *renderer, loadedFace, sourceBuffer, lineOffset );
         OpenGLRender( *glState, loadedFace, renderer );
+        //OpenGLDrawAtlas( *glState, loadedFace );
 
         Swap( mainWindow );
 

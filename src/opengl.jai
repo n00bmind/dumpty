@@ -1,10 +1,24 @@
 
 v2 :: Vector2;
 v3 :: Vector3;
+
 v2s :: struct
 {
     x, y : s32;
 }
+operator + :: ( a: v2s, b: v2s ) -> v2s 
+{
+    return .{ a.x + b.x, a.y + b.y };
+}
+operator - :: ( a: v2s, b: v2s ) -> v2s 
+{
+    return .{ a.x - b.x, a.y - b.y };
+}
+operator * :: ( a: v2s, b: s32 ) -> v2s #symmetric
+{
+    return .{ b * a.x, b* a.y };
+}
+
 v2u :: struct
 {
     x, y : u32;
@@ -112,7 +126,7 @@ LoadedFace :: struct
     texture    : u32;
 }
 
-TEX_ATLAS_SIZE :: 1024;
+FONT_TEX_ATLAS_SIZE :: 1024;
 
 // Loads a font from disk using Freetype and creates an atlas for it
 OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
@@ -160,14 +174,22 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     print( "Font bbox: % x %\n", pixels_w, pixels_h );
     loadedFace.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
 
-    // TODO Seems to still be necessary even with a Po2 1024x1024 texture size?
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    // TODO Seems to still be necessary even with a Po2 1024x1024 texture size when doing 1-byte per pixel font textures
+    // TODO Make a container for application settings
+    // TODO Make subpixel rendering an easily toggeable setting for comparing before/after
+    // TODO Play with the various settings available in https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
+    //glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     glGenTextures( 1, *loadedFace.texture );
     glBindTexture( GL_TEXTURE_2D, loadedFace.texture );
     // TODO Should probably check pixel_mode in the bitmap
     // TODO According to https://freetype.org/freetype2/docs/tutorial/step1.html this needs to be rendered with gamma correction
-    glTexImage2D( GL_TEXTURE_2D, 0, GL_R8, TEX_ATLAS_SIZE, TEX_ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, null );
+    glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
+
+    // Undefined in the provided bindings
+    //#define FT_LOAD_TARGET_( x )   ( FT_STATIC_CAST( FT_Int32, (x) & 15 ) << 16 )
+    //#define FT_LOAD_TARGET_LCD     FT_LOAD_TARGET_( FT_RENDER_MODE_LCD    )
+    FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
 
     // Load glyphs for ASCII
     x, y : s32 = 0;
@@ -175,16 +197,22 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     baseline := loadedFace.lineHeight - loadedFace.descender;
     for 32..126
     {
-        // TODO For subpixel rendering, or the flags with FT_LOAD_TARGET_LCD here
-        error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
+        // Enable subpixel rendering (3 separate alpha components per pixel)
+        error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
         if error
         {
             print( "Failed to load glyph for character %\n", it );
             continue;
         }
 
-        glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
-                         face.glyph.bitmap.width, face.glyph.bitmap.rows, GL_RED, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+        // NOTE FT docs incorrectly report this field as being the width in pixels
+        pixelWidth := face.glyph.bitmap.width / 3;
+        assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
+
+        // Some chars are just empty
+        if pixelWidth && face.glyph.bitmap.rows
+            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
+                             pixelWidth, face.glyph.bitmap.rows, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
 
         advance := cast(s32)(face.glyph.advance.x / 64.0);
         if loadedFace.advance == 0
@@ -197,7 +225,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         g := *(loadedFace.glyphs[ it - 32 ]);
         g.index   = .{ x, y };
         g.offset  = .{ xoffset, yoffset };
-        g.size    = .{ cast(s32) face.glyph.bitmap.width, cast(s32) face.glyph.bitmap.rows };
+        g.size    = .{ cast(s32) pixelWidth, cast(s32) face.glyph.bitmap.rows };
         g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
 
         //print( "Loaded character %: %\n", it, loadedFace.glyphs[ it - 32 ] );
@@ -205,12 +233,12 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         x += 1;
         xoffset += loadedFace.advance;
         // Conservatively break the line when one more full-width glyph won't fit
-        if xoffset + loadedFace.advance > TEX_ATLAS_SIZE
+        if xoffset + loadedFace.advance > FONT_TEX_ATLAS_SIZE
         {
             y += 1;
             // TODO This is probably still too much.. maybe use the font's pixel height?
             yoffset += loadedFace.lineHeight;
-            assert( yoffset + loadedFace.lineHeight <= TEX_ATLAS_SIZE );
+            assert( yoffset + loadedFace.lineHeight <= FONT_TEX_ATLAS_SIZE );
 
             x = 0;
             xoffset = 0;
@@ -237,6 +265,7 @@ RendererState :: struct
 {
     cells : [] RendererCell;
 
+    // NOTE This mirrors the ConstantsBlock in the GridShader
     Constants :: struct
     {
         windowDim: v2s;
@@ -309,7 +338,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         w := face.advance;
         h := face.lineHeight;
 
-        s := cast(float) TEX_ATLAS_SIZE;
+        s := cast(float) FONT_TEX_ATLAS_SIZE;
         u0 := glyph.offset.x / s;
         v0 := glyph.offset.y / s;
         u1 := (glyph.offset.x + w) / s;
@@ -728,11 +757,12 @@ void main ()
         Cell cell = CellFromBufferIndex( cellIndex );
     #endif
 
-        ivec2 glyphPos = UnpackGlyphXY(cell.glyphIndex) * cellSize;
+        ivec2 glyphPos = UnpackGlyphXY( cell.glyphIndex ) * cellSize;
 
         vec2 atlasPos = vec2( glyphPos + cellPos );
-        vec4 glyphTexel = texture(glyphSampler, atlasPos / 1024);
+        vec4 glyphTexel = texture( glyphSampler, atlasPos / 1024 );
 
+        // Gamma-correct cell colors
         vec3 background = ColorToLinear( UnpackColor( cell.backgroundColor ) );
         vec3 foreground = ColorToLinear( UnpackColor( cell.foregroundColor ) );
         //vec3 Blink = UnpackColor(BlinkModulate);
@@ -740,13 +770,13 @@ void main ()
         //if((cell.foreground >> 28) & 1) foreground *= Blink;
         //if((cell.foreground >> 25) & 1) foreground *= 0.5;
 
-        // TODO Sub-pixel rendering
+        // Blend using (subpixel) alpha values with each color component
         // https://www.puredevsoftware.com/blog/2019/01/22/sub-pixel-gamma-correct-font-rendering/
-        // More reading: https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
-        // https://freetype.org/freetype2/docs/hinting/text-rendering-general.html
+        // https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
+        result.r = glyphTexel.r * foreground.r + (1 - glyphTexel.r) * background.r;
+        result.g = glyphTexel.g * foreground.g + (1 - glyphTexel.g) * background.g;
+        result.b = glyphTexel.b * foreground.b + (1 - glyphTexel.b) * background.b;
 
-        // 1-channel texture so alpha is in the r component
-        result = (1 - glyphTexel.r) * background + glyphTexel.r * foreground;
         // Gamma encode it again for presentation
         result = ColorToGamma( result );
     }
@@ -900,8 +930,9 @@ uniform vec4 text_color;
 
 void main () {
     vec4 sample = texture(glyphSampler, TextureCoords);
-    color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
-    if (sample.a < .3)  discard;
+    // TODO Swicth based on whether subpixel rendering is enabled
+    //color = vec4(iterated_color.xyz, sample.r * iterated_color.a); // text_color * sample;
+    color = vec4( sample.rgb, 1 );
 }
 #endif // FRAGMENT_SHADER
 END
