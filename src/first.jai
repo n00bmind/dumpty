@@ -26,12 +26,10 @@ glState: OpenGLState;
 
 test : () -> string = null;
 
-// FIXME We're gonna want the positions here to be absolute too, cause that way we'll know when they point to "expired" positions
-// in the sliding buffer
 Line :: struct
 {
-    relStartPos: s64;
-    relOnePastEndPos: s64;
+    absStartPos: s64;
+    absOnePastEndPos: s64;
     flags: u32;
 }
 SourceBuffer :: struct
@@ -96,42 +94,43 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 
 GetLineLength :: ( line: Line ) -> s64
 {
-    // FIXME What about lines that span the whole buffer?
-    result := line.relOnePastEndPos - line.relStartPos;
-    if result < 0
-        result += SourceBuffer.MAX_SIZE;
-
+    // TODO Test lines that span back to expired buffer positions
+    // TODO What about lines that span the whole buffer?
+    result := line.absOnePastEndPos - line.absStartPos;
     return result;
 }
 
 GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 {
-    relPos := (line.relStartPos + col) & SourceBuffer.SIZE_MASK;
+    relPos := (line.absStartPos + col) & SourceBuffer.SIZE_MASK;
     return buffer.bytes[ relPos ];
 }
 
-ParseNewLines :: ( buffer: *SourceBuffer, relStartPos: s64, sizeBytes: s64 )
+ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
-    assert( relStartPos + sizeBytes <= buffer.bytes.count );
+    srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SIZE_MASK ];
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LINES_MASK ];
 
-    relLineIdx := buffer.absoluteLineIdx & SourceBuffer.LINES_MASK;
-    line := *buffer.lines[ relLineIdx ];
-
-    srcChar := *buffer.bytes[ relStartPos ];
     // FIXME We obvs want to do this faster, at least 16 chars at a time
-    for relStartPos .. relStartPos + sizeBytes - 1
+    for absStartPos .. absStartPos + sizeBytes - 1
     {
-        defer srcChar += 1;
+        defer
+        {
+            srcChar += 1;
+            if srcChar >= buffer.bytes.data + buffer.bytes.count
+                srcChar = buffer.bytes.data;
+        }
 
         if <<srcChar == #char "\n"
         {
-            line.relOnePastEndPos = it + 1;
+            line.absOnePastEndPos = it + 1;
 
             line += 1;
             if line >= buffer.lines.data + buffer.lines.count
                 line = buffer.lines.data;
-            line.relStartPos = it + 1;
-            line.relOnePastEndPos = it + 1;
+            // Start a new, initially empty line
+            line.absStartPos = it + 1;
+            line.absOnePastEndPos = it + 1;
 
             buffer.absoluteLineIdx += 1;
             if buffer.absoluteLineIdx >= xx buffer.lines.count
@@ -143,12 +142,14 @@ ParseNewLines :: ( buffer: *SourceBuffer, relStartPos: s64, sizeBytes: s64 )
 
 InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, maxCellCount: s32 )
 {
-    state.windowDim = .{ windowWidth, windowHeight };
-    state.borderDim = .{ 10, 6 };
-    state.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
-    state.cellSize = .{ face.advance, face.lineHeight };
-    state.cellCount.x = (windowWidth - 2 * state.borderDim.x) / state.cellSize.x;
-    state.cellCount.y = (windowHeight - 2 * state.borderDim.y) / state.cellSize.y;
+    state.windowDim    = .{ windowWidth, windowHeight };
+    state.cellSize     = .{ face.advance, face.lineHeight };
+    state.borderDim    = .{ 10, 6 };
+    state.borderColor  = PackColor( .{ 0.15, 0.15, 0.2 } );
+
+    windowContentDim := state.windowDim - 2 * state.borderDim;
+    state.cellCount.x  = (windowContentDim.x + state.cellSize.x - 1) / state.cellSize.x;
+    state.cellCount.y  = (windowContentDim.y + state.cellSize.y - 1) / state.cellSize.y;
 
     totalCellCount := state.cellCount.x * state.cellCount.y;
     print( "Allocated cell count: %\n", totalCellCount );
@@ -169,12 +170,12 @@ PackColor :: ( color: v3 ) -> u32
     return result;
 }
 
-UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, sourceBuffer: SourceBuffer )
+UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64 )
 {
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
-    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx state.cellCount.y);
+    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx state.cellCount.y);
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
     // TODO Do we wanna initially fill the window from the top down or the bottom up?
     //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
@@ -224,6 +225,7 @@ UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, sourceBuffer: 
 
         linePos = 0;
     }
+    // FIXME Current line at absoluteLineIdx will be empty, so ensure we draw up to the end of the buffer
 }
 
 
@@ -278,10 +280,12 @@ main :: ()
 
     lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
     assert( success2 );
+    lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
+    assert( success3 );
 
     sourceBuffer: SourceBuffer;
     InitSourceBuffer( *sourceBuffer );
-    AppendToSourceBuffer( *sourceBuffer, lipsumData );
+    AppendToSourceBuffer( *sourceBuffer, lipsumWrappedData );
 
 
     app : HMODULE;
@@ -291,6 +295,8 @@ main :: ()
 
     renderer : RendererState;
     InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
+    
+    lineOffset: s64;
 
     quit := false;
     frameCount := 0;
@@ -356,19 +362,29 @@ main :: ()
                 if it.key_pressed == 0
                     continue;
 
-                if it.key_code == .F4 && it.alt_pressed
-                    quit = true;
+                if it.key_code ==
+                {
+                    case .F4;
+                    if it.alt_pressed
+                        quit = true;
                 //if it.key_code == .ESCAPE
                     //quit = true;
+
+                    case .PAGE_UP;
+                    lineOffset += renderer.cellCount.y / 2;
+                    case .PAGE_DOWN;
+                    lineOffset -= renderer.cellCount.y / 2;
+                }
             }
         }
 
+        lineOffset = clamp( lineOffset, 0, sourceBuffer.lines.count - renderer.cellCount.y - 1 );
         glState.windowWidth = cast(float)windowWidth;  
         glState.windowHeight = cast(float)windowHeight;
 
         //text := test();
 
-        UpdateRendererCells( *renderer, loadedFace, sourceBuffer );
+        UpdateRendererCells( *renderer, loadedFace, sourceBuffer, lineOffset );
         OpenGLRender( *glState, loadedFace, renderer );
 
         Swap( mainWindow );
