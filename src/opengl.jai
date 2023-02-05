@@ -10,6 +10,26 @@ v2u :: struct
     x, y : u32;
 }
 
+// TODO Move to our own math module
+IsPowerOfTwo :: (x: int) -> bool
+{
+    return (x & (x - 1)) == 0;
+}
+Log2 :: ( n: s32 ) -> s32
+{
+    assert( n > 0 );
+
+    result: s32;
+    if n >> 16  { n >>= 16; result += 16; }
+    if n >> 8  { n >>= 8; result += 8; }
+    if n >> 4  { n >>= 4; result += 4; }
+    if n >> 2  { n >>= 2; result += 2; }
+    if n >> 1  { n >>= 1; result += 1; }
+
+    return result;
+}
+
+
 OpenGLState :: struct
 {
     windowWidth, windowHeight : float;
@@ -31,8 +51,7 @@ OpenGLState :: struct
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 {
     // TODO Error handling!
-    gl_create_context( window, 3, 3,
-                       compatibility = false, debug = true );
+    gl_create_context( window, 3, 3, compatibility = false, debug = true );
 
     gl_load( *gl );
     gl_enable_debug_output( break_on_error = true );
@@ -156,6 +175,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     baseline := loadedFace.lineHeight - loadedFace.descender;
     for 32..126
     {
+        // TODO For subpixel rendering, or the flags with FT_LOAD_TARGET_LCD here
         error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER );
         if error
         {
@@ -229,6 +249,10 @@ RendererState :: struct
 }
 
 
+// Disable to use previous path using a collection of contiguously-mapped uniform blocks (UBOs)
+// Doesn't seem to offer a real speed advantage (most likely due to the limitation of using a constant expression to index them),
+// although it seems marginally faster on Intel hardware, but it's also pretty limited in the maximum size of cell buffer it can fit,
+// and will still be insufficient for fullscreen windows with a small font size
 USE_TEXTURE_BUFFER :: true;
 
 OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState )
@@ -646,9 +670,6 @@ Cell CellFromTextureIndex( ivec2 cellIndex )
     return cell;
 }
 
-// Previous path using a collection of contiguously-mapped uniform blocks
-// Doesn't seem to offer any speed advantage (most likely due to the limitation of using a constant expression to index them)
-// and moreover it may still be insufficient for fullscreen windows with a small font size
 Cell CellFromBufferIndex( ivec2 cellIndex )
 {
     int idx = cellIndex.y * cellCount.x + cellIndex.x;
@@ -745,30 +766,11 @@ END
     builder.allocator = temp;
     init_string_builder( *builder );
 
-    // TODO Move to our own math module
-    IsPowerOfTwo :: (x: int) -> bool
-    {
-        return (x & (x - 1)) == 0;
-    }
-    log2 :: ( n: s32 ) -> s32
-    {
-        assert( n > 0 );
-
-        result: s32;
-        if n >> 16  { n >>= 16; result += 16; }
-        if n >> 8  { n >>= 8; result += 8; }
-        if n >> 4  { n >>= 4; result += 4; }
-        if n >> 2  { n >>= 2; result += 2; }
-        if n >> 1  { n >>= 1; result += 1; }
-
-        return result;
-    }
-
     // Build a header with some defines
     cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
     assert( IsPowerOfTwo( cellsPerPage ) );
     append( *builder, tprint( "#define USE_TEXTURE_BUFFER %\n", ifx USE_TEXTURE_BUFFER then 1 else 0 ) );
-    append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", log2( cellsPerPage ) ) );
+    append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", Log2( cellsPerPage ) ) );
 
     vShader := CreateAndCompileShader( GL_VERTEX_SHADER, GRID_SHADER, PREFIX_V );
     fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, GRID_SHADER, PREFIX_F, builder_to_string( *builder ) );

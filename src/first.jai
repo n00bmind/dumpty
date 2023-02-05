@@ -17,7 +17,7 @@
 #load "opengl.jai";
 
 // TODO Add to autosaved state & configuration
-INIT_WINDOW_WIDTH  :: 900;
+INIT_WINDOW_WIDTH  :: 1000;
 //WINDOW_HEIGHT :: 720;
 APP_DLL_NAME :: "replr";
 
@@ -26,12 +26,140 @@ glState: OpenGLState;
 
 test : () -> string = null;
 
-//#program_export
+// FIXME We're gonna want the positions here to be absolute too, cause that way we'll know when they point to "expired" positions
+// in the sliding buffer
+Line :: struct
+{
+    relStartPos: s64;
+    relOnePastEndPos: s64;
+    flags: u32;
+}
+SourceBuffer :: struct
+{
+    MAX_SIZE :: 16 * 1024;
+    SIZE_MASK :: MAX_SIZE - 1;
+    MAX_LINES :: 1024;
+    LINES_MASK :: MAX_LINES - 1;
+    
+    bytes: [] u8;
+    lines: [] Line;
+    // Points to the next character to write. Absolute, so needs to be masked
+    absoluteHeadPos: u64;
+    // Same as above, but for the *current* (open) line in the lines buffer
+    absoluteLineIdx: u64;
+    bytesFilled: bool;
+    linesFilled: bool;
+}
+#assert( IsPowerOfTwo( SourceBuffer.MAX_SIZE ) );
+#assert( IsPowerOfTwo( SourceBuffer.MAX_LINES ) );
 
-//NvOptimusEnablement : DWORD = 0x01;
-//AmdPowerXpressRequestHighPerformance : DWORD = 0x01;
 
-#scope_export
+InitSourceBuffer :: ( buffer: *SourceBuffer )
+{
+    base: *void;
+    // Ensure we can call this on already initialised data
+    free( buffer.bytes.data );
+    buffer.bytes, base = NewArray( SourceBuffer.MAX_SIZE, u8 );
+    assert( base == buffer.bytes.data );
+
+    free( buffer.lines.data );
+    buffer.lines, base = NewArray( SourceBuffer.MAX_LINES, Line );
+    assert( base == buffer.lines.data );
+}
+
+// TODO For the general case we'll actually want to be able to get a range in the buffer to copy straight into
+AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
+{
+    assert( data.count < buffer.bytes.count );
+
+    relPos := cast(s64)(buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK);
+    available := buffer.bytes.count - relPos;
+
+    // Do we need to split the copy? (if we're approaching the end of the buffer)
+    if( data.count < available )
+    {
+        memcpy( buffer.bytes.data + relPos, data.data, data.count );
+        ParseNewLines( buffer, relPos, data.count );
+    }
+    else
+    {
+        memcpy( buffer.bytes.data + relPos, data.data, available );
+        memcpy( buffer.bytes.data, data.data + available, data.count - available );
+
+        ParseNewLines( buffer, relPos, available );
+        ParseNewLines( buffer, 0, data.count - available );
+    }
+    buffer.absoluteHeadPos += xx data.count;
+    if buffer.absoluteHeadPos >= xx buffer.bytes.count
+        buffer.bytesFilled = true;
+}
+
+GetLineLength :: ( line: Line ) -> s64
+{
+    // FIXME What about lines that span the whole buffer?
+    result := line.relOnePastEndPos - line.relStartPos;
+    if result < 0
+        result += SourceBuffer.MAX_SIZE;
+
+    return result;
+}
+
+GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
+{
+    relPos := (line.relStartPos + col) & SourceBuffer.SIZE_MASK;
+    return buffer.bytes[ relPos ];
+}
+
+ParseNewLines :: ( buffer: *SourceBuffer, relStartPos: s64, sizeBytes: s64 )
+{
+    assert( relStartPos + sizeBytes <= buffer.bytes.count );
+
+    relLineIdx := buffer.absoluteLineIdx & SourceBuffer.LINES_MASK;
+    line := *buffer.lines[ relLineIdx ];
+
+    srcChar := *buffer.bytes[ relStartPos ];
+    // FIXME We obvs want to do this faster, at least 16 chars at a time
+    for relStartPos .. relStartPos + sizeBytes - 1
+    {
+        defer srcChar += 1;
+
+        if <<srcChar == #char "\n"
+        {
+            line.relOnePastEndPos = it + 1;
+
+            line += 1;
+            if line >= buffer.lines.data + buffer.lines.count
+                line = buffer.lines.data;
+            line.relStartPos = it + 1;
+            line.relOnePastEndPos = it + 1;
+
+            buffer.absoluteLineIdx += 1;
+            if buffer.absoluteLineIdx >= xx buffer.lines.count
+                buffer.linesFilled = true;
+        }
+    }
+}
+
+
+InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, maxCellCount: s32 )
+{
+    state.windowDim = .{ windowWidth, windowHeight };
+    state.borderDim = .{ 10, 6 };
+    state.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
+    state.cellSize = .{ face.advance, face.lineHeight };
+    state.cellCount.x = (windowWidth - 2 * state.borderDim.x) / state.cellSize.x;
+    state.cellCount.y = (windowHeight - 2 * state.borderDim.y) / state.cellSize.y;
+
+    totalCellCount := state.cellCount.x * state.cellCount.y;
+    print( "Allocated cell count: %\n", totalCellCount );
+    assert( totalCellCount < maxCellCount, "Need % cells, but the maximum is %", totalCellCount, maxCellCount );
+
+    // Ensure we can call this on already initialised data
+    free( state.cells.data );
+    base: *void;
+    state.cells, base = NewArray( totalCellCount, RendererCell );
+    assert( base == state.cells.data );
+}
 
 PackColor :: ( color: v3 ) -> u32
 {
@@ -40,6 +168,73 @@ PackColor :: ( color: v3 ) -> u32
                 |  ((cast(u32)(color.x * 255)) & 0xFF);
     return result;
 }
+
+UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, sourceBuffer: SourceBuffer )
+{
+    fg := PackColor( .{ 1, 1, 1 } );
+    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+
+    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx state.cellCount.y);
+    // Clamp at 0 if we underflowed but the buffer has never filled up yet
+    // TODO Do we wanna initially fill the window from the top down or the bottom up?
+    //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
+        //absStartLineIdx = 0;
+    relStartLineIdx := absStartLineIdx & SourceBuffer.LINES_MASK;
+    line := *sourceBuffer.lines[ relStartLineIdx ];
+
+    linePos := 0;
+    dst := state.cells.data;
+    for row: 0..state.cellCount.y - 1
+    {
+        lineLength := GetLineLength( <<line );
+
+        for col: 0..state.cellCount.x - 1
+        {
+            defer dst += 1;
+
+            dst.foregroundColor = fg;
+            dst.backgroundColor = bg;
+
+            if linePos >= lineLength
+            {
+                // Glyph 0,0 is always the empty/space glyph
+                dst.glyphIndex = 0;
+                continue;
+            }
+
+            char := GetCharAt( sourceBuffer, <<line, linePos );
+            if char >= 32 && char < 127
+            {
+                glyph := face.glyphs[ char - 32 ];
+                dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+            }
+            else
+            {
+                // TODO Make a reserved glyph for "unkown symbol"
+                dst.glyphIndex = 0;
+            }
+
+            linePos += 1;
+        }
+
+        // TODO Line wrapping
+        line += 1;
+        if line >= sourceBuffer.lines.data + sourceBuffer.lines.count
+            line = sourceBuffer.lines.data;
+
+        linePos = 0;
+    }
+}
+
+
+// TODO Disabled for now so we use Intel by default on the laptop
+// (we probably don't want to force this anyway?)
+//#program_export
+
+//NvOptimusEnablement : DWORD = 0x01;
+//AmdPowerXpressRequestHighPerformance : DWORD = 0x01;
+
+#scope_export
 
 main :: ()
 {
@@ -51,6 +246,8 @@ main :: ()
     #if OS == .WINDOWS
     {
         SetProcessDPIAware();
+        // TODO Find and call the newer function for Win10
+        //SetProcessDPIAwareContext( .. );
 
         timeBeginPeriod(1);
 
@@ -66,19 +263,25 @@ main :: ()
 
     if( !OpenGLInit( *glState, mainWindow ) )
         exit( 1 );
+    EnableVSync( false );
 
     windowX, windowY, windowWidth, windowHeight := get_dimensions( mainWindow, false );
     //print( "Window dimensions: %, % - %, %\n", windowX, windowY, windowWidth, windowHeight );
 
-    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 10 );
+    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 16 );
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
         exit( 1 );
     }
 
+
     lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
     assert( success2 );
+
+    sourceBuffer: SourceBuffer;
+    InitSourceBuffer( *sourceBuffer );
+    AppendToSourceBuffer( *sourceBuffer, lipsumData );
 
 
     app : HMODULE;
@@ -86,67 +289,8 @@ main :: ()
     app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
     temp_dll_ord := 0;
 
-    ResetRenderer :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, maxCellCount: s32 )
-    {
-        state.windowDim = .{ windowWidth, windowHeight };
-        state.borderDim = .{ 10, 6 };
-        state.borderColor = PackColor( .{ 0.15, 0.15, 0.2 } );
-        state.cellSize = .{ face.advance, face.lineHeight };
-        state.cellCount.x = (windowWidth - 2 * state.borderDim.x) / state.cellSize.x;
-        state.cellCount.y = (windowHeight - 2 * state.borderDim.y) / state.cellSize.y;
-
-        totalCellCount := state.cellCount.x * state.cellCount.y;
-        print( "Allocated cell count: %\n", totalCellCount );
-        assert( totalCellCount < maxCellCount, "Need % cells, but the maximum is %", totalCellCount, maxCellCount );
-
-        free( state.cells.data );
-        base: *void;
-        state.cells, base = NewArray( totalCellCount, RendererCell );
-    }
-
-    UpdateRendererCells :: ( state: *RendererState, face: LoadedFace, contents: string )
-    {
-        fg := PackColor( .{ 1, 1, 1 } );
-        bg := PackColor( .{ 0.15, 0.15, 0.2 } );
-
-        srcIndex := 0;
-        dst := state.cells.data;
-        for row: 0..state.cellCount.y - 1
-        {
-            inLineBreak := false;
-            for col: 0..state.cellCount.x - 1
-            {
-                defer dst += 1;
-
-                dst.foregroundColor = fg;
-                dst.backgroundColor = bg;
-
-                if srcIndex >= contents.count
-                    continue;
-
-                char := contents[srcIndex];
-                if char == #char "\r"
-                {
-                    srcIndex += 1;
-                    continue;
-                }
-                else if char == #char "\n"
-                {
-                    srcIndex += 1;
-                    inLineBreak = true;
-                }
-
-                glyph := ifx inLineBreak face.glyphs[0] else face.glyphs[ char - 32 ];
-                dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
-
-                if !inLineBreak
-                    srcIndex += 1;
-            }
-        }
-    }
-
     renderer : RendererState;
-    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
+    InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
 
     quit := false;
     frameCount := 0;
@@ -198,10 +342,9 @@ main :: ()
                     windowWidth  = it.width;
                     windowHeight = it.height;
 
-                    ResetRenderer( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
-                    //print( "New window dimensions: %, %\n", windowWidth, windowHeight );
+                    InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
+                    print( "New window dimensions: %, %\n", windowWidth, windowHeight );
                 }
-                //if sizeChanged my_init_fonts();  // Resize the font for the new window size.
             }
         }
         for events_this_frame
@@ -224,15 +367,8 @@ main :: ()
         glState.windowHeight = cast(float)windowHeight;
 
         //text := test();
-        OpenGLDrawFSQTest( *glState );
 
-        //OpenGLDrawTextWithFace( *glState, "ABCDEFGHJKLMNOPQRSTUVWXYZ", 100, 500, loadedFace );
-        //OpenGLDrawTextWithFace( *glState, "abcdefghjklmnopqrstuvwxyz", 100, 600, loadedFace );
-        //OpenGLDrawTextWithFace( *glState, " !\"#$%&'()*+,-./", 100, 700, loadedFace );
-
-        //OpenGLDrawAtlas( *glState, loadedFace );
-
-        UpdateRendererCells( *renderer, loadedFace, lipsumData );
+        UpdateRendererCells( *renderer, loadedFace, sourceBuffer );
         OpenGLRender( *glState, loadedFace, renderer );
 
         Swap( mainWindow );
@@ -259,27 +395,56 @@ main :: ()
     exit( 0 );
 }
 
+EnableVSync :: ( enabled: bool )
+{
+    #if OS == .WINDOWS
+        wglSwapIntervalEXT( xx ifx enabled then 1 else 0 );
+    // TODO Untested from here
+    else #if OS == .LINUX
+    {
+        info := find_window_info( window );
+        assert( info && info.specific.glx_window, "Attempt to swap_buffers on a previously unseen window!" );
+        
+        glXSwapIntervalEXT( x_global_display, info.specific.glx_window );
+    }
+    else #if OS == .MACOS
+    {
+        assert( window == state.current_window_info.window );
+
+        value: GLint = ifx enable then 1 else 0;
+        NSOpenGLContext.setValues( the_gl_context, *value, NSOpenGLContextParameterSwapInterval );
+    }
+    else
+    {
+        assert( false );
+    }
+}
+
 // Taken from the Simp OpenGL backend
 Swap :: ( window: Window_Type, vsync := true )
 {
-    #if OS == .WINDOWS {
-        dc := GetDC(window);
-        SwapBuffers(dc);
-    } else #if OS == .LINUX {
-        info := find_window_info(window);
-        if (!info) || !info.specific.glx_window {
-            log_error("Simp: Attempt to swap_buffers on a previously unseen window!\n");
-            return;
-        }
+    #if OS == .WINDOWS
+    {
+        dc := GetDC( window );
+        SwapBuffers( dc );
+    }
+    else #if OS == .LINUX
+    {
+        info := find_window_info( window );
+        assert( info && info.specific.glx_window, "Attempt to swap_buffers on a previously unseen window!" );
         
-        glXSwapBuffers(x_global_display, info.specific.glx_window);
-    } else #if OS == .MACOS {
+        glXSwapBuffers( x_global_display, info.specific.glx_window );
+    }
+    else #if OS == .MACOS
+    {
         // On macOS, OpenGL buffer swapping is done on the context, not on the view.
         // So we can only swap for the active window. (And you need to swap before switching to another view).
-        assert(window == state.current_window_info.window);
-        NSOpenGLContext.flushBuffer(the_gl_context);
-    } else {
-        assert(false);
+        assert( window == state.current_window_info.window );
+        NSOpenGLContext.flushBuffer( the_gl_context );
+    }
+    else
+    {
+        assert( false );
     }
 }
 
