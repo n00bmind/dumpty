@@ -14,6 +14,8 @@
     #import "Windows";
 }
 
+
+#load "interface.jai";
 #load "opengl.jai";
 
 // TODO Add to autosaved state & configuration
@@ -24,6 +26,8 @@ APP_DLL_NAME :: "replr";
 mainWindow: Window_Type;
 glState: OpenGLState;
 
+
+UpdateAndRender: UpdateAndRenderFunc = null;
 test : () -> string = null;
 
 Line :: struct
