@@ -51,9 +51,9 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     state.whiteTextureHandle = OpenGLAllocateTexture( cast(*u8)*state.white, 1, 1, true, null );
 
     // Setup render state: alpha-blending enabled, no face culling, no depth testing,
-    glEnable( GL_BLEND );
-    glBlendEquation( GL_FUNC_ADD );
-    glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    //glEnable( GL_BLEND );
+    //glBlendEquation( GL_FUNC_ADD );
+    //glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
     glDisable( GL_CULL_FACE );
     glDisable( GL_DEPTH_TEST );
 
@@ -381,7 +381,6 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 
     DumpGLErrors( "frame setup" );
 
-    //glClearColor( 0.15, 0.15, 0.2, 1.0 ); 
     // Clear background with red, cause if we see it that's bad!
     glClearColor( 1, 0, 0, 1.0 ); 
     glClear( GL_COLOR_BUFFER_BIT );

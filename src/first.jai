@@ -27,9 +27,6 @@ mainWindow: Window_Type;
 glState: OpenGLState;
 
 
-UpdateAndRender: UpdateAndRenderFunc = null;
-test : () -> string = null;
-
 Line :: struct
 {
     absStartPos: s64;
@@ -293,9 +290,9 @@ main :: ()
 
 
     app : HMODULE;
-    app_modtime : Apollo_Time;
-    app_dll_path := sprint( "bin/%.dll", APP_DLL_NAME );
-    temp_dll_ord := 0;
+    appMemory: AppMemory;
+    appModtime : Apollo_Time;
+    appDLLPath := sprint( "bin/%.dll", APP_DLL_NAME );
 
     renderer : RendererState;
     InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
@@ -308,34 +305,12 @@ main :: ()
     while !quit
     {
         // Check whether we need to load app entry points from the DLL
-        modtime, size, modtime_ok := file_modtime_and_size( app_dll_path );
-        if modtime_ok && modtime > app_modtime
+        modtime, size, modtimeOk := file_modtime_and_size( appDLLPath );
+        if modtimeOk && modtime > appModtime
         {
-            // Make a copy of the DLL first so we don't lock it when loading it
-            temp_dll_name := tprint( "%.temp.%.dll", APP_DLL_NAME, temp_dll_ord );
-            temp_dll_path := tprint( "bin/%", temp_dll_name );
-
-            if copy_file( app_dll_path, temp_dll_path, silent = true )
-            {
-                old_app := app;
-                print( "Found new app dll with modtime %\n", modtime );
-                print( "Loading app code from '%'..\n", temp_dll_path );
-                app = LoadLibraryA( temp_dll_path.data );
-                if app
-                {
-                    test = cast(type_of(test))GetProcAddress( app, "Test" );
-                    //print( "Found 'Test' func at %\n", test );
-
-                    FreeLibrary( old_app );
-                    app_modtime = modtime;
-                    temp_dll_ord = 1 - temp_dll_ord;
-                }
-                else
-                {
-                    error, desc := get_error_value_and_string();
-                    print( "App code loading FAILED (%)!\n", desc );
-                }
-            }
+            print( "Found new app dll with modtime %\n", modtime );
+            if LoadAppCode( *app, appDLLPath, *appMemory )
+                appModtime = modtime;
         }
 
         update_window_events();
@@ -414,6 +389,47 @@ main :: ()
     }
 
     exit( 0 );
+}
+
+#scope_file
+
+// App API
+UpdateAndRender: UpdateAndRenderFunc = null;
+test : () -> string = null;
+tempDLLOrdinal := 0;
+
+LoadAppCode :: ( app: *HMODULE, path: string, appMemory: *AppMemory ) -> bool
+{
+    // Make a copy of the DLL first so we don't lock it when loading it
+    tempDLLName := tprint( "%.temp.%.dll", APP_DLL_NAME, tempDLLOrdinal );
+    tempDLLPath := tprint( "bin/%", tempDLLName );
+
+    if copy_file( path, tempDLLPath, silent = true )
+    {
+        oldApp := <<app;
+        print( "Loading app code from '%'..\n", tempDLLPath );
+        <<app = LoadLibraryA( tempDLLPath.data );
+        if <<app
+        {
+            test = cast(type_of(test))GetProcAddress( <<app, "Test" );
+            print( "Found 'test' func at %\n", test );
+            UpdateAndRender = cast(type_of(UpdateAndRender)) GetProcAddress( <<app, "UpdateAndRender" );
+            print( "Found 'UpdateAndRender' func at %\n", UpdateAndRender );
+            assert( UpdateAndRender != null );
+
+            FreeLibrary( oldApp );
+            tempDLLOrdinal = 1 - tempDLLOrdinal;
+
+            return true;
+        }
+        else
+        {
+            error, desc := get_error_value_and_string();
+            print( "App code loading FAILED (%)!\n", desc );
+        }
+    }
+
+    return false;
 }
 
 EnableVSync :: ( enabled: bool )

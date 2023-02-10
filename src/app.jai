@@ -14,6 +14,7 @@ Test :: () -> string // #c_call
 
 // TODO Make an @implements(UpdateAndRenderFunc) note that's parsed by the metaprogram which will then
 // #assert( type_of(UpdateAndRender) == UpdateAndRenderFunc );
+//UpdateAndRenderFunc :: #type ( input: AppInput, memory: *AppMemory, renderer: *RendererState );
 UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererState )
 {
 
