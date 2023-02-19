@@ -71,17 +71,6 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 }
 
 
-LoadedFace :: struct
-{
-    glyphs     : [126-32+1] Glyph;
-    face       : *FT_Face;
-    bbox       : v2s;
-    advance    : s32;
-    lineHeight : s32;
-    descender  : s32;   // Absolute value
-    texture    : u32;
-}
-
 FONT_TEX_ATLAS_SIZE :: 1024;
 
 // Loads a font from disk using Freetype and creates an atlas for it
@@ -115,7 +104,6 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
 
     
     loadedFace: LoadedFace;
-    loadedFace.face = *face;
     loadedFace.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
     print( "Font line height is %\n", loadedFace.lineHeight );
     // TODO Apparently relying on the ascender / descender is.. unreliable .. see https://freetype.org/freetype2/docs/tutorial/step2.html
@@ -429,6 +417,7 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 
 #scope_file
 
+#import "File";
 #import "Math";
 #import "GL" ( DUMP_GL_ERRORS = true );
 #import "freetype-2.12.1";
@@ -467,14 +456,6 @@ GridShader :: struct
     cellsSamplerUni:       GLint;
     cellsTexture:          GLuint;
     maxCellCount:          s32;
-}
-
-Glyph :: struct
-{
-    index:   v2s;
-    offset:  v2s;
-    size:    v2s;
-    bearing: v2s;
 }
 
 
@@ -777,9 +758,10 @@ END
     #if USE_TEXTURE_BUFFER
     {
         MAX_TEXTURE_CELLS :: 128 * 1024;
+        shader.maxCellCount = state.maxTextureBufferSize / size_of(RendererCell);
+        print( "Max supported cell count (TBO): % / %\n", MAX_TEXTURE_CELLS, shader.maxCellCount );
         // Arbitrarily limit the max size just so that our buffer is not hundreds of Mb big
-        shader.maxCellCount = min( state.maxTextureBufferSize / size_of(RendererCell), MAX_TEXTURE_CELLS );
-        print( "Max supported cell count (TBO): %\n", shader.maxCellCount );
+        shader.maxCellCount = min( shader.maxCellCount, MAX_TEXTURE_CELLS );
 
         glGenBuffers( 1, *shader.cellsBufferHandle );
         glBindBuffer( GL_TEXTURE_BUFFER, shader.cellsBufferHandle );

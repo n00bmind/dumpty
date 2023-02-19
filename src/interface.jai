@@ -1,58 +1,19 @@
 #import "Math";
-
-
-// TODO Move all this stuff to our own math module
-v2 :: Vector2;
-v3 :: Vector3;
-
-v2s :: struct
-{
-    x, y : s32;
-}
-operator + :: ( a: v2s, b: v2s ) -> v2s 
-{
-    return .{ a.x + b.x, a.y + b.y };
-}
-operator - :: ( a: v2s, b: v2s ) -> v2s 
-{
-    return .{ a.x - b.x, a.y - b.y };
-}
-operator * :: ( a: v2s, b: s32 ) -> v2s #symmetric
-{
-    return .{ b * a.x, b* a.y };
-}
-
-v2u :: struct
-{
-    x, y : u32;
-}
-
-IsPowerOfTwo :: (x: int) -> bool
-{
-    return (x & (x - 1)) == 0;
-}
-Log2 :: ( n: s32 ) -> s32
-{
-    assert( n > 0 );
-
-    result: s32;
-    if n >> 16  { n >>= 16; result += 16; }
-    if n >> 8  { n >>= 8; result += 8; }
-    if n >> 4  { n >>= 4; result += 4; }
-    if n >> 2  { n >>= 2; result += 2; }
-    if n >> 1  { n >>= 1; result += 1; }
-
-    return result;
-}
+#import "Input";
+#load "math.jai";
+#load "memory.jai";
 
 AppInput :: struct
 {
-
+    events: [..] Event;
 }
 
 AppMemory :: struct
 {
+    appState: *void;
+    loadedFace: *LoadedFace;
 
+    initialized: bool;
 }
 
 
@@ -80,6 +41,25 @@ RendererState :: struct
         borderColor: u32;
     }
     using constants : Constants;
+}
+
+
+Glyph :: struct
+{
+    index:   v2s;
+    offset:  v2s;
+    size:    v2s;
+    bearing: v2s;
+}
+
+LoadedFace :: struct
+{
+    glyphs     : [126-32+1] Glyph;
+    bbox       : v2s;
+    advance    : s32;
+    lineHeight : s32;
+    descender  : s32;   // Absolute value
+    texture    : u32;
 }
 
 
