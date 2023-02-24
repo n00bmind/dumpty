@@ -71,6 +71,34 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 }
 
 
+DumpGlyphBitmapData :: ( buffer: *u8, width: u32, height: u32 )
+{
+    for y: 0..height - 1
+    {
+        for x: 0..width - 1
+        {
+            v := buffer[ y * width + x ];
+            if v == 0
+                print( " .  " );
+            else
+                print( "% ", formatInt( v, minimum_digits = 3, padding = #char " " ) );
+        }
+        print( "\n" );
+    }
+    exit( 0 );
+}
+
+DumpGlyphBitmapData :: ( glyph: FT_GlyphSlot )
+{
+    print( "Glyph index %:\n", glyph.glyph_index );
+    print( "Width %\n", glyph.bitmap.width );
+    print( "Pitch %\n", glyph.bitmap.pitch );
+    print( "Height %\n", glyph.bitmap.rows );
+    print( "Bearing X %\n", glyph.bitmap_left );
+    print( "Bearing Y %\n", glyph.bitmap_top );
+    DumpGlyphBitmapData( glyph.bitmap.buffer, xx glyph.bitmap.pitch, glyph.bitmap.rows );
+}
+
 FONT_TEX_ATLAS_SIZE :: 1024;
 
 // Loads a font from disk using Freetype and creates an atlas for it
@@ -139,32 +167,67 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     x, y : s32 = 0;
     xoffset, yoffset : s32 = 0;
     baseline := loadedFace.lineHeight - loadedFace.descender;
-    for 32..126
+    for 32..127
     {
-        // Enable subpixel rendering (3 separate alpha components per pixel)
-        error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
-        if error
+        pixelWidth: u32;
+
+        if it == 127
         {
-            print( "Failed to load glyph for character %\n", it );
-            continue;
+            // Special-case last glyph to use as both cursor and "unknown" character
+            // TODO Make temporary
+            buffer: [..] u8;
+            // Still don't understand why OpenGL seems to expect "padding" here when doing glTexSubImage2D
+            // TODO What about other pixel sizes? What's the rule here exactly?
+            // See the description for 'pitch' in https://freetype.org/freetype2/docs/reference/ft2-basic_types.html#ft_bitmap
+            pitch := loadedFace.advance * 3 + 1;
+            array_resize( *buffer, pitch * loadedFace.lineHeight );
+            for j: 0..loadedFace.lineHeight - 1
+            {
+                for i: 0..loadedFace.advance - 1
+                {
+                    atBorder := (i == 0 || j == 0 || i == loadedFace.advance - 1 || j == loadedFace.lineHeight - 1);
+                    buffer[j * pitch + i*3 + 0] = xx ifx atBorder then 0xFF else 0;
+                    buffer[j * pitch + i*3 + 1] = xx ifx atBorder then 0xFF else 0;
+                    buffer[j * pitch + i*3 + 2] = xx ifx atBorder then 0xFF else 0;
+                }
+            }
+
+            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, xx loadedFace.advance, xx loadedFace.lineHeight, GL_RGB, GL_UNSIGNED_BYTE, buffer.data );
+            // FIXME Should set correct size & bearing for this guy
+
+            //DumpGlyphBitmapData( buffer.data, xx pitch, xx loadedFace.lineHeight );
         }
+        else
 
-        // NOTE FT docs incorrectly report this field as being the width in pixels
-        pixelWidth := face.glyph.bitmap.width / 3;
-        assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
-
-        // Some chars are just empty
-        if pixelWidth && face.glyph.bitmap.rows
-            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
-                             pixelWidth, face.glyph.bitmap.rows, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
-
-        advance := cast(s32)(face.glyph.advance.x / 64.0);
-        if loadedFace.advance == 0
         {
-            loadedFace.advance = advance;
-            print( "Font advance is %\n", loadedFace.advance );
+            // Enable subpixel rendering (3 separate alpha components per pixel)
+            error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
+            if error
+            {
+                print( "Failed to load glyph for character %\n", it );
+                continue;
+            }
+
+            // NOTE FT docs incorrectly report this field as being the width in pixels
+            pixelWidth = face.glyph.bitmap.width / 3;
+            assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
+
+            // Some chars are just empty
+            if pixelWidth && face.glyph.bitmap.rows
+                glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
+                                 pixelWidth, face.glyph.bitmap.rows, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+
+            advance := cast(s32)(face.glyph.advance.x / 64.0);
+            if loadedFace.advance == 0
+            {
+                loadedFace.advance = advance;
+                print( "Font advance is %\n", loadedFace.advance );
+            }
+            assert( advance == loadedFace.advance, "Font has non-uniform advance" );
+
+            //if it == 77
+                //DumpGlyphBitmapData( face.glyph );
         }
-        assert( advance == loadedFace.advance, "Font has non-uniform advance" );
 
         g := *(loadedFace.glyphs[ it - 32 ]);
         g.index   = .{ x, y };

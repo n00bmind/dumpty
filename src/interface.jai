@@ -54,7 +54,7 @@ Glyph :: struct
 
 LoadedFace :: struct
 {
-    glyphs     : [126-32+1] Glyph;
+    glyphs     : [128-32] Glyph;
     bbox       : v2s;
     advance    : s32;
     lineHeight : s32;

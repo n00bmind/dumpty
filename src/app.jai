@@ -59,6 +59,7 @@ Init :: ( memory: *AppMemory ) -> *AppState
 
     InitSourceBuffer( *appState.sourceBuffer );
     AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
+    AppendToSourceBuffer( *appState.sourceBuffer, "\n>>> \x7F\n" );
 
     return appState;
 }
@@ -97,7 +98,7 @@ UpdateRendererCells :: ( state: *RendererState, face: *LoadedFace, sourceBuffer:
             }
 
             char := GetCharAt( sourceBuffer, <<line, linePos );
-            if char >= 32 && char < 127
+            if char >= 32 && char <= 127
             {
                 glyph := face.glyphs[ char - 32 ];
                 dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
