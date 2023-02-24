@@ -159,6 +159,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
 
     // Undefined in the provided bindings
+    // TODO Investigate SDF rendering supported on latest FT .. see https://github.com/tsoding/ded/pull/60
     //#define FT_LOAD_TARGET_( x )   ( FT_STATIC_CAST( FT_Int32, (x) & 15 ) << 16 )
     //#define FT_LOAD_TARGET_LCD     FT_LOAD_TARGET_( FT_RENDER_MODE_LCD    )
     FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
