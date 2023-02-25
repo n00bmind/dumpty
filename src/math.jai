@@ -52,3 +52,18 @@ PackColor :: ( color: v3 ) -> u32
     return result;
 }
 
+// Round to nearest, following C's convention .. https://cplusplus.com/reference/cmath/round/
+Round :: ( x: float64 ) -> float64
+{
+    y := floor( x );
+
+    d := x - y;
+    if d > 0.5 || (d == 0.5 && x > 0)
+        y += 1;
+
+    return y;
+}
+Round :: ( x: float32 ) -> float32
+{
+    return cast(float32) Round( cast(float64)x );
+}

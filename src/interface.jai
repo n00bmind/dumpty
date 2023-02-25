@@ -19,12 +19,16 @@ AppMemory :: struct
 
 RendererCell :: struct
 {
+    using enum_flags u32
+    {
+        Blinking;
+    }
+
     glyphIndex : u32;
     // NOTE Since we likely won't use the alpha on these, we could pack some flags in there
     foregroundColor : u32;
     backgroundColor : u32;
-
-    _padding : u32;
+    flags : u32;
 }
 
 RendererState :: struct
@@ -34,11 +38,12 @@ RendererState :: struct
     // NOTE This mirrors the ConstantsBlock in the GridShader
     Constants :: struct
     {
-        windowDim: v2s;
-        cellSize: v2s;
-        cellCount: v2s;
-        borderDim: v2s;
-        borderColor: u32;
+        windowDim:          v2s;
+        cellSize:           v2s;
+        cellCount:          v2s;
+        borderDim:          v2s;
+        borderColor:        u32;
+        blinkModulateColor: u32;
     }
     using constants : Constants;
 }

@@ -146,16 +146,15 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     print( "Font bbox: % x %\n", pixels_w, pixels_h );
     loadedFace.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
 
-    // TODO Seems to still be necessary even with a Po2 1024x1024 texture size when doing 1-byte per pixel font textures
+    // TODO This must be 1 when doing 1-byte per pixel font textures
     // TODO Make a container for application settings
     // TODO Make subpixel rendering an easily toggeable setting for comparing before/after
     // TODO Play with the various settings available in https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
-    //glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
 
     glGenTextures( 1, *loadedFace.texture );
     glBindTexture( GL_TEXTURE_2D, loadedFace.texture );
     // TODO Should probably check pixel_mode in the bitmap
-    // TODO According to https://freetype.org/freetype2/docs/tutorial/step1.html this needs to be rendered with gamma correction
     glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
 
     // Undefined in the provided bindings
@@ -165,8 +164,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
 
     // Load glyphs for ASCII
-    x, y : s32 = 0;
-    xoffset, yoffset : s32 = 0;
+    x, y, xoffset, yoffset : s32 = 0;
     baseline := loadedFace.lineHeight - loadedFace.descender;
     for 32..127
     {
@@ -177,11 +175,11 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
             // Special-case last glyph to use as both cursor and "unknown" character
             // TODO Make temporary
             buffer: [..] u8;
-            // Still don't understand why OpenGL seems to expect "padding" here when doing glTexSubImage2D
-            // TODO What about other pixel sizes? What's the rule here exactly?
+            // GL_UNPACK_ALIGNMENT of 4 seems to suit FT's subpixel-rendered bitmaps, so this one needs to respect that too
             // See the description for 'pitch' in https://freetype.org/freetype2/docs/reference/ft2-basic_types.html#ft_bitmap
-            pitch := loadedFace.advance * 3 + 1;
+            pitch := AlignUp( loadedFace.advance * 3, 4 );
             array_resize( *buffer, pitch * loadedFace.lineHeight );
+
             for j: 0..loadedFace.lineHeight - 1
             {
                 for i: 0..loadedFace.advance - 1
@@ -218,15 +216,20 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
                 glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
                                  pixelWidth, face.glyph.bitmap.rows, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
 
-            advance := cast(s32)(face.glyph.advance.x / 64.0);
+            // FIXME Since FT only provides an integer value, this becomes quite imprecise at small sizes.
+            // In a way we're doing our own grid fitting. Investigate what the best practice is here..
+            // TODO Try to find and test non-integer sizes and see how the shader responds
+            advance := cast(s32) Round( face.glyph.advance.x / 64.0 );
             if loadedFace.advance == 0
             {
                 loadedFace.advance = advance;
-                print( "Font advance is %\n", loadedFace.advance );
+                print( "Font advance is % (rounded from %)\n", loadedFace.advance, face.glyph.advance.x / 64.0 );
             }
+            // TODO There are glyphs with a bigger pitch than their reported advance, so what's the deal with those?
+            // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads. Check U, V, W at small sizes
             assert( advance == loadedFace.advance, "Font has non-uniform advance" );
 
-            //if it == 77
+            //if it == 87
                 //DumpGlyphBitmapData( face.glyph );
         }
 
@@ -244,7 +247,7 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         if xoffset + loadedFace.advance > FONT_TEX_ATLAS_SIZE
         {
             y += 1;
-            // TODO This is probably still too much.. maybe use the font's pixel height?
+            // TODO This may be still too much.. maybe use the font's pixel height?
             yoffset += loadedFace.lineHeight;
             assert( yoffset + loadedFace.lineHeight <= FONT_TEX_ATLAS_SIZE );
 
@@ -609,6 +612,7 @@ layout (std140) uniform ConstantsBlock
     ivec2 cellCount;
     ivec2 borderDim;
     uint borderColor;
+    uint blinkModulateColor;
 };
 
 // NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a minimum sizeof(Cell) of 16!
@@ -619,7 +623,7 @@ struct Cell
     // See https://blog.demofox.org/2018/03/10/dont-convert-srgb-u8-to-linear-u8/
     uint foregroundColor;
     uint backgroundColor;
-    uint _padding;
+    uint flags;
 };
 
 // This amounts to 12 UBOs of 65536 bytes, which is supposedly the minimum guaranteed by the spec.
@@ -739,9 +743,9 @@ void main ()
         // Gamma-correct cell colors
         vec3 background = ColorToLinear( UnpackColor( cell.backgroundColor ) );
         vec3 foreground = ColorToLinear( UnpackColor( cell.foregroundColor ) );
-        //vec3 Blink = UnpackColor(BlinkModulate);
 
-        //if((cell.foreground >> 28) & 1) foreground *= Blink;
+        vec3 blink = UnpackColor( blinkModulateColor );
+        if( (cell.flags & 1u) != 0u ) foreground *= blink;
         //if((cell.foreground >> 25) & 1) foreground *= 0.5;
 
         // Blend using (subpixel) alpha values with each color component

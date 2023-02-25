@@ -28,6 +28,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
     appState.lineOffset = clamp( appState.lineOffset, 0, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
 
+    BlinkTimeMillis :: 500;
+    blink := (cast(int)(get_time() * 1000 / BlinkTimeMillis)) & 1;
+    renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF222222;
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset );
 }
 
@@ -58,18 +61,18 @@ Init :: ( memory: *AppMemory ) -> *AppState
     assert( success3 );
 
     InitSourceBuffer( *appState.sourceBuffer );
-    AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
-    AppendToSourceBuffer( *appState.sourceBuffer, "\n>>> \x7F\n" );
+    //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
+    AppendToSourceBuffer( *appState.sourceBuffer, "\n> \x7F\n" );
 
     return appState;
 }
 
-UpdateRendererCells :: ( state: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64 )
+UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64 )
 {
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
-    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx state.cellCount.y);
+    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx renderer.cellCount.y);
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
     // TODO Do we wanna initially fill the window from the top down or the bottom up?
     //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
@@ -78,12 +81,12 @@ UpdateRendererCells :: ( state: *RendererState, face: *LoadedFace, sourceBuffer:
     line := *sourceBuffer.lines[ relStartLineIdx ];
 
     linePos := 0;
-    dst := state.cells.data;
-    for row: 0..state.cellCount.y - 1
+    dst := renderer.cells.data;
+    for row: 0..renderer.cellCount.y - 1
     {
         lineLength := GetLineLength( <<line );
 
-        for col: 0..state.cellCount.x - 1
+        for col: 0..renderer.cellCount.x - 1
         {
             defer dst += 1;
 
@@ -102,6 +105,9 @@ UpdateRendererCells :: ( state: *RendererState, face: *LoadedFace, sourceBuffer:
             {
                 glyph := face.glyphs[ char - 32 ];
                 dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                // HACK Do this properly via parsing of escape sequences
+                if char == 127
+                    dst.flags |= xx RendererCell.Blinking;
             }
             else
             {
