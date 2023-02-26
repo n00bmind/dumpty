@@ -115,10 +115,17 @@ main :: ()
                         //quit = true;
 
                         case;
-                        array_add( *appInput.events, it );
+                        continue;
                     }
                 }
+
+                case .TEXT_INPUT;
+                //
+
+                case;
+                    continue;
             }
+            array_add( *appInput.events, it );
         }
 
         glState.windowWidth = cast(float)windowWidth;  

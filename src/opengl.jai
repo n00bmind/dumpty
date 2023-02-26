@@ -184,7 +184,11 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
             {
                 for i: 0..loadedFace.advance - 1
                 {
-                    atBorder := (i == 0 || j == 0 || i == loadedFace.advance - 1 || j == loadedFace.lineHeight - 1);
+                    // TODO Cursor style setting
+                    //atBorder := (i == 0 || j == 0 || i == loadedFace.advance - 1 || j == loadedFace.lineHeight - 1);
+                    //atBorder := (j == loadedFace.lineHeight - 1);
+                    //atBorder := (i == 0 || i == 1);
+                    atBorder := true;
                     buffer[j * pitch + i*3 + 0] = xx ifx atBorder then 0xFF else 0;
                     buffer[j * pitch + i*3 + 1] = xx ifx atBorder then 0xFF else 0;
                     buffer[j * pitch + i*3 + 2] = xx ifx atBorder then 0xFF else 0;
