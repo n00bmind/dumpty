@@ -25,6 +25,13 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 appState.lineOffset += renderer.cellCount.y / 2;
                 case .PAGE_DOWN;
                 appState.lineOffset -= renderer.cellCount.y / 2;
+
+                case .BACKSPACE;
+                pop( *commandLine.input );
+
+                case .ENTER;
+                // TODO Use 'run_command' in the Process module as an example of how to async run a process
+                ExecuteCommand( *appState );
             }
 
             case .TEXT_INPUT;
@@ -33,15 +40,17 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                 // TODO Temp!
                 str := character_utf32_to_utf8( value );
-                append( *commandLine.builder, str );
+                push( *commandLine.input, str );
                 free( str );
+                
+                appState.lastInputSeconds = get_time();
             }
         }
     }
     appState.lineOffset = clamp( appState.lineOffset, 0, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
 
     BlinkTimeMillis :: 500;
-    blink := (cast(int)(get_time() * 1000 / BlinkTimeMillis)) & 1;
+    blink := ~(cast(int)( (get_time() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
@@ -52,11 +61,12 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 #import "File";
 #import "Unicode";
 #load "interface.jai";
+#load "util.jai";
 
 
 CommandLine :: struct
 {
-    builder: String_Builder;
+    input: [..] u8;
     // TODO Cursor pos etc
 }
 
@@ -68,6 +78,8 @@ AppState :: struct
     lineOffset: s64;
 
     commandLine: CommandLine;
+
+    lastInputSeconds: float64;
 }
 
 Init :: ( memory: *AppMemory ) -> *AppState
@@ -84,6 +96,8 @@ Init :: ( memory: *AppMemory ) -> *AppState
 
     InitSourceBuffer( *appState.sourceBuffer );
     //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
+
+    array_reserve( *appState.commandLine.input, 1024 );
 
     return appState;
 }
@@ -143,7 +157,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     // FIXME Current line at absoluteLineIdx will be empty, so ensure we draw up to the end of the buffer
 
     // Draw command line
-    command := builder_to_string( *commandLine.builder, do_reset = false );
+    command := to_string( commandLine.input );
     //print( "Append command line %\n", command );
 
     for col: 0..renderer.cellCount.x - 1

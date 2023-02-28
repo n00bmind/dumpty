@@ -114,6 +114,10 @@ main :: ()
                         //if it.key_code == .ESCAPE
                         //quit = true;
 
+                        case .BACKSPACE;
+                        case .ENTER;
+                        //
+
                         case;
                         continue;
                     }
