@@ -30,8 +30,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 pop( *commandLine.input );
 
                 case .ENTER;
-                // TODO Use 'run_command' in the Process module as an example of how to async run a process
-                ExecuteCommand( *appState );
+                ExecuteCommand( appState );
             }
 
             case .TEXT_INPUT;
@@ -60,6 +59,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
 #import "File";
 #import "Unicode";
+#import "Process";
+#import "System";
 #load "interface.jai";
 #load "util.jai";
 
@@ -78,6 +79,8 @@ AppState :: struct
     lineOffset: s64;
 
     commandLine: CommandLine;
+    runningProcess: Process;
+    lastProcessResult: Process_Result;
 
     lastInputSeconds: float64;
 }
@@ -313,3 +316,69 @@ GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 }
 
 
+ExecuteCommand :: ( appState: *AppState ) -> bool
+{
+    // We already have a single contiguous string, so pass it verbatim
+    command := cast(string) appState.commandLine.input;
+
+    // TODO Do we need to cache / process this?
+    workingDir := get_working_directory();
+
+    success := create_process( *appState.runningProcess, command,
+                               working_directory = workingDir,
+                               capture_and_return_output = true,
+                               arg_quoting = Process_Argument_Quoting.NEVER_QUOTE );
+
+    if !success
+        // TODO Diagnostics
+        return false;
+
+    // TODO Call deinit(*appState.process) when we're done
+    return true;
+}
+
+ReadCommandOutput :: ( appState: *AppState ) -> bool
+{
+    // TODO Do this properly
+    buffer: [1024] u8;
+    success, output_bytes, error_bytes
+        := read_from_process( *appState.runningProcess, buffer, buffer );
+
+    if !success
+        // TODO Diagnostics
+        return false;
+
+    // No more output, so wait for it to finish
+    if appState.runningProcess.output.eof && appState.runningProcess.error.eof
+    {
+        success, appState.lastProcessResult = get_process_result( *appState.runningProcess );
+        if success
+        {
+            if appState.lastProcessResult.type == .STILL_RUNNING
+                return true;
+        }
+        else
+        {
+            error_code, error_string := get_error_value_and_string();
+            // TODO Diagnostics
+            //log_error( "Couldn’t get process result for command \"%\": % %", get_quoted_command_string(args), error_code, error_string );
+            kill_process( *appState.runningProcess );
+            appState.lastProcessResult = .{type = .EXITED, exit_code = 1};
+        }
+        return false;
+    }
+
+    if output_bytes == 0 && error_bytes == 0
+        return true;
+
+    // TODO To properly support this, we'd have to read from each pipe ourselves
+    // (check the Process module for any way of doing this)
+    assert( (output_bytes == 0) ^ (error_bytes == 0), "Process wrote to stdout & stderr simultaneously" );
+
+    if output_bytes
+        AppendToSourceBuffer( *appState.sourceBuffer, cast(string) buffer );
+    if error_bytes
+        AppendToSourceBuffer( *appState.sourceBuffer, cast(string) buffer );
+
+    return true;
+}
