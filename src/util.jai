@@ -18,5 +18,6 @@ push :: ( array: *[..] u8, data: string )
 
 pop :: ( array: *[..] $T, count: int = 1 )
 {
+    assert( array.count > 0 );
     array.count -= count;
 }

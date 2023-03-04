@@ -27,7 +27,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 appState.lineOffset -= renderer.cellCount.y / 2;
 
                 case .BACKSPACE;
-                pop( *commandLine.input );
+                if commandLine.input.count > 0
+                    pop( *commandLine.input );
 
                 case .ENTER;
                 AppendToSourceBuffer( *appState.sourceBuffer, "> " );
@@ -331,13 +332,21 @@ GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 
 ExecuteCommand :: ( appState: *AppState ) -> bool
 {
-    // We already have a single contiguous string, so pass it verbatim
-    command := cast(string) appState.commandLine.input;
+    // TODO This is part of the "dummy wrapper" shell config
+    // TODO Allow tweaking this in a setting
+    command: [4] string =
+    .[
+        "cmd",
+        "/S",
+        "/C",
+        "",
+    ];
+    command[3] = tprint( "\"%\"", cast(string) appState.commandLine.input );
 
     // TODO Do we need to cache / process this?
     workingDir := get_working_directory();
 
-    success := create_process( *appState.runningProcess, command,
+    success := create_process( *appState.runningProcess, .. command,
                                working_directory = workingDir,
                                capture_and_return_output = true,
                                arg_quoting = Process_Argument_Quoting.NEVER_QUOTE );
