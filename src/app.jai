@@ -30,14 +30,20 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 pop( *commandLine.input );
 
                 case .ENTER;
-                ExecuteCommand( appState );
+                AppendToSourceBuffer( *appState.sourceBuffer, "> " );
+                AppendToSourceBuffer( *appState.sourceBuffer, cast(string) commandLine.input );
+                AppendToSourceBuffer( *appState.sourceBuffer, "\n" );
+
+                if !ExecuteCommand( appState )
+                    AppendToSourceBuffer( *appState.sourceBuffer, "Error executing command\n" );
+                commandLine.input.count = 0;
             }
 
             case .TEXT_INPUT;
             {
                 value := it.utf32;
 
-                // TODO Temp!
+                // TODO Temp mem!
                 str := character_utf32_to_utf8( value );
                 push( *commandLine.input, str );
                 free( str );
@@ -48,7 +54,12 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
     appState.lineOffset = clamp( appState.lineOffset, 0, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
 
-    BlinkTimeMillis :: 500;
+    if IsRunning( appState.runningProcess )
+    {
+        ReadCommandOutput( appState );
+    }
+
+    BlinkTimeMillis :: 900;
     blink := ~(cast(int)( (get_time() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
@@ -101,6 +112,8 @@ Init :: ( memory: *AppMemory ) -> *AppState
     //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
 
     array_reserve( *appState.commandLine.input, 1024 );
+
+    Init( *appState.runningProcess );
 
     return appState;
 }
@@ -333,20 +346,27 @@ ExecuteCommand :: ( appState: *AppState ) -> bool
         // TODO Diagnostics
         return false;
 
-    // TODO Call deinit(*appState.process) when we're done
     return true;
 }
 
 ReadCommandOutput :: ( appState: *AppState ) -> bool
 {
-    // TODO Do this properly
+    // TODO Do this properly without copies
     buffer: [1024] u8;
     success, output_bytes, error_bytes
         := read_from_process( *appState.runningProcess, buffer, buffer );
 
-    if !success
-        // TODO Diagnostics
-        return false;
+    if output_bytes || error_bytes
+    {
+        // TODO To properly support this, we'd have to read from each pipe ourselves
+        // (check the Process module for any way of doing this)
+        assert( (output_bytes == 0) ^ (error_bytes == 0), "Process wrote to stdout & stderr simultaneously" );
+
+        out: string = ---;
+        out.data = buffer.data;
+        out.count = output_bytes + error_bytes;
+        AppendToSourceBuffer( *appState.sourceBuffer, out );
+    }
 
     // No more output, so wait for it to finish
     if appState.runningProcess.output.eof && appState.runningProcess.error.eof
@@ -365,20 +385,36 @@ ReadCommandOutput :: ( appState: *AppState ) -> bool
             kill_process( *appState.runningProcess );
             appState.lastProcessResult = .{type = .EXITED, exit_code = 1};
         }
+
+        AppendToSourceBuffer( *appState.sourceBuffer, "\n" );
+        Reset( *appState.runningProcess );
         return false;
     }
 
-    if output_bytes == 0 && error_bytes == 0
-        return true;
-
-    // TODO To properly support this, we'd have to read from each pipe ourselves
-    // (check the Process module for any way of doing this)
-    assert( (output_bytes == 0) ^ (error_bytes == 0), "Process wrote to stdout & stderr simultaneously" );
-
-    if output_bytes
-        AppendToSourceBuffer( *appState.sourceBuffer, cast(string) buffer );
-    if error_bytes
-        AppendToSourceBuffer( *appState.sourceBuffer, cast(string) buffer );
-
     return true;
+}
+
+Init :: ( process: *Process )
+{
+    init :: initializer_of(Process);
+    inline init( process );
+
+    #if OS == .WINDOWS
+        process.info.hProcess = INVALID_HANDLE_VALUE;
+    else
+        assert( false, "Implement me" );
+}
+
+Reset :: ( process: *Process )
+{
+    deinit( process );
+    Init( process );
+}
+
+IsRunning :: ( process: Process ) -> bool
+{
+    #if OS == .WINDOWS
+        return process.info.hProcess != INVALID_HANDLE_VALUE;
+    else
+        assert( false, "Implement me" );
 }

@@ -59,6 +59,7 @@ main :: ()
     
     quit := false;
     frameCount := 0;
+    loadNoticeShown := false;
     lastTitleUpdateTimestamp: float64 = 0;
     while !quit
     {
@@ -66,9 +67,16 @@ main :: ()
         modtime, size, modtimeOk := file_modtime_and_size( appDLLPath );
         if modtimeOk && modtime > appModtime
         {
-            print( "Found new app dll with modtime %\n", modtime );
+            if app && !loadNoticeShown
+            {
+                print( "Trying to load updated app code..\n" );
+                loadNoticeShown = true;
+            }
             if LoadAppCode( *app, appDLLPath, *appMemory )
+            {
                 appModtime = modtime;
+                loadNoticeShown = false;
+            }
         }
 
         update_window_events();
@@ -217,27 +225,30 @@ InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s3
 // App API
 UpdateAndRender: UpdateAndRenderFunc = null;
 tempDLLOrdinal := 0;
+oldApp: HMODULE;
 
 LoadAppCode :: ( app: *HMODULE, path: string, appMemory: *AppMemory ) -> bool
 {
     // Make a copy of the DLL first so we don't lock it when loading it
     tempDLLName := tprint( "%.temp.%.dll", APP_DLL_NAME, tempDLLOrdinal );
-    tempDLLPath := tprint( "bin/%", tempDLLName );
+    tempDLLPath := tprint( "%/bin/%", get_working_directory(), tempDLLName );
 
     if copy_file( path, tempDLLPath, silent = true )
     {
-        oldApp := <<app;
-        print( "Loading app code from '%'..\n", tempDLLPath );
+        if <<app
+            oldApp = <<app;
+
         <<app = LoadLibraryA( tempDLLPath.data );
         if <<app
         {
             UpdateAndRender = cast(type_of(UpdateAndRender)) GetProcAddress( <<app, "UpdateAndRender" );
-            print( "Found 'UpdateAndRender' func at %\n", UpdateAndRender );
+            //print( "Found 'UpdateAndRender' func at %\n", UpdateAndRender );
             assert( UpdateAndRender != null );
 
             FreeLibrary( oldApp );
             tempDLLOrdinal = 1 - tempDLLOrdinal;
 
+            print( "App code loaded OK from '%'..\n", tempDLLPath );
             return true;
         }
         else
