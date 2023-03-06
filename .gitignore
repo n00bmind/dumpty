@@ -5,6 +5,7 @@
 *.lib
 *.pdb
 .session.vim
-bin/
+bin/*
+!bin/data
 
 *.rdbg

@@ -11,7 +11,7 @@
 main :: ()
 {
     path := path_strip_filename( get_path_of_running_executable() );
-    set_working_directory( join( path, "/.." ) );
+    set_working_directory( path ); //join( path, "/.." ) );
     path = get_working_directory();
     print( "Working directory is '%'\n", path );
 
@@ -44,7 +44,7 @@ main :: ()
     appInput: AppInput;
     appMemory: AppMemory;
     appModtime : Apollo_Time;
-    appDLLPath := sprint( "bin/%.dll", APP_DLL_NAME );
+    appDLLPath := sprint( "%.dll", APP_DLL_NAME );
 
     loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 16 );
     if !success
@@ -59,7 +59,6 @@ main :: ()
     
     quit := false;
     frameCount := 0;
-    loadNoticeShown := false;
     lastTitleUpdateTimestamp: float64 = 0;
     while !quit
     {
@@ -67,16 +66,13 @@ main :: ()
         modtime, size, modtimeOk := file_modtime_and_size( appDLLPath );
         if modtimeOk && modtime > appModtime
         {
-            if app && !loadNoticeShown
-            {
-                print( "Trying to load updated app code..\n" );
-                loadNoticeShown = true;
-            }
             if LoadAppCode( *app, appDLLPath, *appMemory )
-            {
                 appModtime = modtime;
-                loadNoticeShown = false;
-            }
+        }
+        if !app
+        {
+            print( "FATAL :: Couldn't load app code!\n" );
+            exit( 1 );
         }
 
         update_window_events();
@@ -224,16 +220,25 @@ InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s3
 
 // App API
 UpdateAndRender: UpdateAndRenderFunc = null;
+loadNoticeShown := false;
 tempDLLOrdinal := 0;
 oldApp: HMODULE;
 
-LoadAppCode :: ( app: *HMODULE, path: string, appMemory: *AppMemory ) -> bool
+LoadAppCode :: ( app: *HMODULE, srcPath: string, appMemory: *AppMemory ) -> bool
 {
     // Make a copy of the DLL first so we don't lock it when loading it
     tempDLLName := tprint( "%.temp.%.dll", APP_DLL_NAME, tempDLLOrdinal );
-    tempDLLPath := tprint( "%/bin/%", get_working_directory(), tempDLLName );
+    // The docs explicitly mention using '\', although it appears to work with '/' too..
+    exePath := path_strip_filename( get_path_of_running_executable() );
+    tempDLLPath := tprint( "%/%", exePath, tempDLLName );
 
-    if copy_file( path, tempDLLPath, silent = true )
+    if !loadNoticeShown
+    {
+        print( "Trying to load app code from '%'..\n", tempDLLPath );
+        loadNoticeShown = true;
+    }
+
+    if copy_file( srcPath, tempDLLPath, silent = true )
     {
         if <<app
             oldApp = <<app;
@@ -248,7 +253,8 @@ LoadAppCode :: ( app: *HMODULE, path: string, appMemory: *AppMemory ) -> bool
             FreeLibrary( oldApp );
             tempDLLOrdinal = 1 - tempDLLOrdinal;
 
-            print( "App code loaded OK from '%'..\n", tempDLLPath );
+            print( "App code loaded OK\n" );
+            loadNoticeShown = false;
             return true;
         }
         else
