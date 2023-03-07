@@ -21,7 +21,8 @@ OpenGLState :: struct
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 {
     // TODO Error handling!
-    gl_create_context( window, 3, 3, compatibility = false, debug = true );
+    //gl_create_context( window, 3, 3, compatibility = false, debug = true );
+    gl_create_context( window, 3, 3, compatibility = false );
 
     gl_load( *gl );
     gl_enable_debug_output( break_on_error = true );
@@ -599,10 +600,6 @@ void main()
 
 #ifdef FRAGMENT_SHADER
 
-// Passed from outside code
-#define CELLS_PER_PAGE (1 << CELLS_PER_PAGE_BITS)
-#define CELLS_PER_PAGE_MASK (CELLS_PER_PAGE - 1)
-
 layout(origin_upper_left) in vec4 gl_FragCoord;
 out vec4 color;
 
@@ -629,13 +626,6 @@ struct Cell
     uint backgroundColor;
     uint flags;
 };
-
-// This amounts to 12 UBOs of 65536 bytes, which is supposedly the minimum guaranteed by the spec.
-// TODO Test on old cards!!
-layout (std140) uniform CellsBlock
-{
-    Cell cells[CELLS_PER_PAGE];
-} cellPages[12];
 
 
 ivec2 UnpackGlyphXY( uint packedIndex )
@@ -681,44 +671,6 @@ Cell CellFromTextureIndex( ivec2 cellIndex )
     return cell;
 }
 
-Cell CellFromBufferIndex( ivec2 cellIndex )
-{
-    int idx = cellIndex.y * cellCount.x + cellIndex.x;
-    int cellPage = idx >> CELLS_PER_PAGE_BITS;
-    int indexInPage = idx & CELLS_PER_PAGE_MASK;
-
-    Cell cell;
-    // HACK Apparently you can only index an array of blocks using a constant expression, so.. yeah..
-    if( cellPage == 0 )
-        cell = cellPages[0].cells[indexInPage];
-    else if( cellPage == 1 )
-        cell = cellPages[1].cells[indexInPage];
-    else if( cellPage == 2 )
-        cell = cellPages[2].cells[indexInPage];
-    else if( cellPage == 3 )
-        cell = cellPages[3].cells[indexInPage];
-    else if( cellPage == 4 )
-        cell = cellPages[4].cells[indexInPage];
-    else if( cellPage == 5 )
-        cell = cellPages[5].cells[indexInPage];
-    else if( cellPage == 6 )
-        cell = cellPages[6].cells[indexInPage];
-    else if( cellPage == 7 )
-        cell = cellPages[7].cells[indexInPage];
-    else if( cellPage == 8 )
-        cell = cellPages[8].cells[indexInPage];
-    else if( cellPage == 9 )
-        cell = cellPages[9].cells[indexInPage];
-    else if( cellPage == 10 )
-        cell = cellPages[10].cells[indexInPage];
-    else if( cellPage == 11 )
-        cell = cellPages[11].cells[indexInPage];
-
-    // TODO Just so its easy to see when we're using this path
-    cell.foregroundColor = 0xFF0000u;
-    return cell;
-}
-
 
 void main ()
 {
@@ -733,11 +685,7 @@ void main ()
         (cellIndex.x < cellCount.x) &&
         (cellIndex.y < cellCount.y) )
     {
-    #if USE_TEXTURE_BUFFER
         Cell cell = CellFromTextureIndex( cellIndex );
-    #else
-        Cell cell = CellFromBufferIndex( cellIndex );
-    #endif
 
         ivec2 glyphPos = UnpackGlyphXY( cell.glyphIndex ) * cellSize;
 
@@ -774,18 +722,24 @@ void main ()
 #endif // FRAGMENT_SHADER
 END
 
-    builder: String_Builder;
-    builder.allocator = temp;
-    init_string_builder( *builder );
+    //builder: String_Builder;
+    //builder.allocator = temp;
+    //init_string_builder( *builder );
+
+    // TODO #if RELEASE etc
+    // TODO Hot reloading
+    gridShader := GRID_SHADER;
+    //gridShader := read_entire_file( "../src/text_grid.glsl", zero_terminated = true );
 
     // Build a header with some defines
     cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
     assert( IsPowerOfTwo( cellsPerPage ) );
-    append( *builder, tprint( "#define USE_TEXTURE_BUFFER %\n", ifx USE_TEXTURE_BUFFER then 1 else 0 ) );
-    append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", Log2( cellsPerPage ) ) );
+    //append( *builder, tprint( "#define USE_TEXTURE_BUFFER %\n", ifx USE_TEXTURE_BUFFER then 1 else 0 ) );
+    //append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", Log2( cellsPerPage ) ) );
 
-    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, GRID_SHADER, PREFIX_V );
-    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, GRID_SHADER, PREFIX_F, builder_to_string( *builder ) );
+    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, gridShader, PREFIX_V );
+    //fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PREFIX_F, builder_to_string( *builder ) );
+    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PREFIX_F );
     if !vShader || !fShader
         return false;
 
