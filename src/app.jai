@@ -9,6 +9,10 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     {
         Init( memory );
         memory.initialized = true;
+
+        appState := cast(*AppState) memory.appState;
+        ret := StartShell( appState );
+        assert( ret, "Failed to start shell" );
     }
 
     appState := cast(*AppState) memory.appState;
@@ -31,9 +35,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     pop( *commandLine.input );
 
                 case .ENTER;
-                AppendToSourceBuffer( *appState.sourceBuffer, "> " );
-                AppendToSourceBuffer( *appState.sourceBuffer, cast(string) commandLine.input );
-                AppendToSourceBuffer( *appState.sourceBuffer, "\n" );
+                // Send as text too
+                // TODO Is this shell dependent?
+                push( *commandLine.input, "\n" );
 
                 if !ExecuteCommand( appState )
                     AppendToSourceBuffer( *appState.sourceBuffer, "Error executing command\n" );
@@ -57,7 +61,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
     if IsRunning( appState.runningProcess )
     {
-        ReadCommandOutput( appState );
+        ReadShellOutput( appState );
     }
 
     BlinkTimeMillis :: 900;
@@ -330,18 +334,14 @@ GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 }
 
 
-ExecuteCommand :: ( appState: *AppState ) -> bool
+StartShell :: ( appState: *AppState ) -> bool
 {
     // TODO This is part of the "dummy wrapper" shell config
     // TODO Allow tweaking this in a setting
-    command: [4] string =
+    command: [] string =
     .[
         "cmd",
-        "/S",
-        "/C",
-        "",
     ];
-    command[3] = tprint( "\"%\"", cast(string) appState.commandLine.input );
 
     // TODO Do we need to cache / process this?
     workingDir := get_working_directory();
@@ -358,12 +358,21 @@ ExecuteCommand :: ( appState: *AppState ) -> bool
     return true;
 }
 
-ReadCommandOutput :: ( appState: *AppState ) -> bool
+ExecuteCommand :: ( appState: *AppState ) -> bool
+{
+    result, bytesWritten := write_to_process( *appState.runningProcess, appState.commandLine.input );
+    assert( bytesWritten == appState.commandLine.input.count, "Couldn't write full command" );
+    return result;
+}
+
+ReadShellOutput :: ( appState: *AppState ) -> bool
 {
     // TODO Do this properly without copies
     buffer: [1024] u8;
+    // TODO Eventually we need to wait on multiple objects instead of polling/sleeping
+    // (which sadly means we'll need to go full platform-dependant I think)
     success, output_bytes, error_bytes
-        := read_from_process( *appState.runningProcess, buffer, buffer );
+        := read_from_process( *appState.runningProcess, buffer, buffer, timeout_ms = 10 );
 
     if output_bytes || error_bytes
     {

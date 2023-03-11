@@ -128,7 +128,7 @@ main :: ()
                 }
 
                 case .TEXT_INPUT;
-                //
+                // Send everything through
 
                 case;
                     continue;
