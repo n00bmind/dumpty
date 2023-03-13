@@ -11,7 +11,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         memory.initialized = true;
 
         appState := cast(*AppState) memory.appState;
-        ret := StartShell( appState );
+        ret := StartShell( *appState.shellProcess );
         assert( ret, "Failed to start shell" );
     }
 
@@ -39,7 +39,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 // TODO Is this shell dependent?
                 push( *commandLine.input, "\n" );
 
-                if !ExecuteCommand( appState )
+                if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
                     AppendToSourceBuffer( *appState.sourceBuffer, "Error executing command\n" );
                 commandLine.input.count = 0;
             }
@@ -59,9 +59,16 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
     appState.lineOffset = clamp( appState.lineOffset, 0, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
 
-    if IsRunning( appState.runningProcess )
+    if IsRunning( appState.shellProcess )
     {
-        ReadShellOutput( appState );
+        alive, result := ReadShellOutput( *appState.shellProcess, *appState.sourceBuffer );
+        if !alive
+        {
+            print( "Shell process died (%).\n", result );
+            Reset( *appState.shellProcess );
+            // TODO Restart
+            assert( false );
+        }
     }
 
     BlinkTimeMillis :: 900;
@@ -71,6 +78,56 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
 }
 
+
+SourceBuffer :: struct
+{
+    MAX_SIZE :: 16 * 1024;
+    SIZE_MASK :: MAX_SIZE - 1;
+    MAX_LINES :: 1024;
+    LINES_MASK :: MAX_LINES - 1;
+    
+    bytes: [] u8;
+    lines: [] Line;
+    // Points to the next character to write. Absolute, so needs to be masked
+    absoluteHeadPos: u64;
+    // Same as above, but for the *current* (open) line in the lines buffer
+    absoluteLineIdx: u64;
+    bytesFilled: bool;
+    linesFilled: bool;
+}
+#assert( IsPowerOfTwo( SourceBuffer.MAX_SIZE ) );
+#assert( IsPowerOfTwo( SourceBuffer.MAX_LINES ) );
+
+// TODO For the general case we'll actually want to be able to get a range in the buffer to copy straight into
+AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
+{
+    assert( data.count < buffer.bytes.count );
+
+    relPos := cast(s64)(buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK);
+    available := buffer.bytes.count - relPos;
+
+    // Do we need to split the copy? (if we're approaching the end of the buffer)
+    if( data.count < available )
+    {
+        memcpy( buffer.bytes.data + relPos, data.data, data.count );
+        // FIXME This seems wrong, we're passing relative buffer positions but the lines we're building in there expect absolute!
+        ParseNewLines( buffer, relPos, data.count );
+    }
+    else
+    {
+        memcpy( buffer.bytes.data + relPos, data.data, available );
+        memcpy( buffer.bytes.data, data.data + available, data.count - available );
+
+        // FIXME This seems wrong, we're passing relative buffer positions but the lines we're building in there expect absolute!
+        ParseNewLines( buffer, relPos, available );
+        ParseNewLines( buffer, 0, data.count - available );
+    }
+    buffer.absoluteHeadPos += xx data.count;
+    if buffer.absoluteHeadPos >= xx buffer.bytes.count
+        buffer.bytesFilled = true;
+}
+
+
 #scope_file
 
 #import "File";
@@ -79,6 +136,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 #import "System";
 #load "interface.jai";
 #load "util.jai";
+#load "shell_cmd.jai";
 
 
 CommandLine :: struct
@@ -95,8 +153,7 @@ AppState :: struct
     lineOffset: s64;
 
     commandLine: CommandLine;
-    runningProcess: Process;
-    lastProcessResult: Process_Result;
+    shellProcess: Process;
 
     lastInputSeconds: float64;
 }
@@ -113,12 +170,12 @@ Init :: ( memory: *AppMemory ) -> *AppState
     lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
     assert( success3 );
 
-    InitSourceBuffer( *appState.sourceBuffer );
+    Init( *appState.sourceBuffer );
     //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
 
     array_reserve( *appState.commandLine.input, 1024 );
 
-    Init( *appState.runningProcess );
+    Init( *appState.shellProcess );
 
     return appState;
 }
@@ -127,6 +184,8 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
 {
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+
+    commandString := to_string( commandLine.input );
 
     absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx renderer.cellCount.y + 1);
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
@@ -137,7 +196,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     line := *sourceBuffer.lines[ relStartLineIdx ];
 
     dst := renderer.cells.data;
-    for row: 0..renderer.cellCount.y - 2
+    for row: 0..renderer.cellCount.y - 1
     {
         lineLength := GetLineLength( <<line );
 
@@ -151,6 +210,27 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
 
             if col >= lineLength
             {
+                // Draw current command and cursor on the last line
+                if row == renderer.cellCount.y - 1
+                {
+                    cmdLineStartPos := lineLength;
+                    if col >= cmdLineStartPos && col < cmdLineStartPos + commandString.count
+                    {
+                        char := commandString[ col - cmdLineStartPos ];
+                        glyph := *face.glyphs[ char - 32 ];
+                        dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        continue;
+                    }
+                    // FIXME Actual cursor pos
+                    else if col >= cmdLineStartPos && col == cmdLineStartPos + commandString.count
+                    {
+                        glyph := *face.glyphs[127 - 32];
+                        dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        dst.flags |= xx RendererCell.Blinking;
+                        continue;
+                    }
+                }
+
                 // Glyph 0,0 is always the empty/space glyph
                 dst.glyphIndex = 0;
                 continue;
@@ -176,47 +256,47 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
             line = sourceBuffer.lines.data;
     }
     // FIXME Current line at absoluteLineIdx will be empty, so ensure we draw up to the end of the buffer
+    // TODO This is no longer true, but step over all that data and do some tests
 
-    // Draw command line
-    command := to_string( commandLine.input );
-    //print( "Append command line %\n", command );
-
-    for col: 0..renderer.cellCount.x - 1
+    #if false
     {
-        dst.foregroundColor = fg;
-        dst.backgroundColor = bg;
-        dst.flags = 0;
+        for col: 0..renderer.cellCount.x - 1
+        {
+            dst.foregroundColor = fg;
+            dst.backgroundColor = bg;
+            dst.flags = 0;
 
-        glyph: *Glyph;
-        if col == 0
-            glyph = *face.glyphs[ #char ">" - 32 ];
-        else if col == 1
+            glyph: *Glyph;
+            if col == 0
+                glyph = *face.glyphs[ #char ">" - 32 ];
+            else if col == 1
             glyph = *face.glyphs[ #char " " - 32 ];
-        else if col == command.count + 2
-        {
-            glyph = *face.glyphs[127 - 32];
-            dst.flags |= xx RendererCell.Blinking;
-        }
-        else if col > command.count + 2
-        {
-            glyph = *face.glyphs[0];
-        }
-        else
-        {
-            char := command[ col - 2 ];
-            if char >= 32 && char <= 127
+            else if col == command.count + 2
             {
-                glyph = *face.glyphs[ char - 32 ];
+                glyph = *face.glyphs[127 - 32];
+                dst.flags |= xx RendererCell.Blinking;
+            }
+            else if col > command.count + 2
+            {
+                glyph = *face.glyphs[0];
             }
             else
             {
-                // TODO Unknown symbol should be separate from the cursor glyph
-                glyph = *face.glyphs[127 - 32];
+                char := command[ col - 2 ];
+                if char >= 32 && char <= 127
+                {
+                    glyph = *face.glyphs[ char - 32 ];
+                }
+                else
+                {
+                    // TODO Unknown symbol should be separate from the cursor glyph
+                    glyph = *face.glyphs[127 - 32];
+                }
             }
-        }
-        dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+            dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
 
-        dst += 1;
+            dst += 1;
+        }
     }
 }
 
@@ -227,26 +307,8 @@ Line :: struct
     absOnePastEndPos: s64;
     flags: u32;
 }
-SourceBuffer :: struct
-{
-    MAX_SIZE :: 16 * 1024;
-    SIZE_MASK :: MAX_SIZE - 1;
-    MAX_LINES :: 1024;
-    LINES_MASK :: MAX_LINES - 1;
-    
-    bytes: [] u8;
-    lines: [] Line;
-    // Points to the next character to write. Absolute, so needs to be masked
-    absoluteHeadPos: u64;
-    // Same as above, but for the *current* (open) line in the lines buffer
-    absoluteLineIdx: u64;
-    bytesFilled: bool;
-    linesFilled: bool;
-}
-#assert( IsPowerOfTwo( SourceBuffer.MAX_SIZE ) );
-#assert( IsPowerOfTwo( SourceBuffer.MAX_LINES ) );
 
-InitSourceBuffer :: ( buffer: *SourceBuffer )
+Init :: ( buffer: *SourceBuffer )
 {
     base: *void;
     // Ensure we can call this on already initialised data
@@ -259,33 +321,7 @@ InitSourceBuffer :: ( buffer: *SourceBuffer )
     assert( base == buffer.lines.data );
 }
 
-// TODO For the general case we'll actually want to be able to get a range in the buffer to copy straight into
-AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
-{
-    assert( data.count < buffer.bytes.count );
-
-    relPos := cast(s64)(buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK);
-    available := buffer.bytes.count - relPos;
-
-    // Do we need to split the copy? (if we're approaching the end of the buffer)
-    if( data.count < available )
-    {
-        memcpy( buffer.bytes.data + relPos, data.data, data.count );
-        ParseNewLines( buffer, relPos, data.count );
-    }
-    else
-    {
-        memcpy( buffer.bytes.data + relPos, data.data, available );
-        memcpy( buffer.bytes.data, data.data + available, data.count - available );
-
-        ParseNewLines( buffer, relPos, available );
-        ParseNewLines( buffer, 0, data.count - available );
-    }
-    buffer.absoluteHeadPos += xx data.count;
-    if buffer.absoluteHeadPos >= xx buffer.bytes.count
-        buffer.bytesFilled = true;
-}
-
+// TODO Test all this absolute-relative line positions malarkey again
 ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
     srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SIZE_MASK ];
@@ -294,13 +330,6 @@ ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
     // FIXME We obvs want to do this faster, at least 16 chars at a time
     for absStartPos .. absStartPos + sizeBytes - 1
     {
-        defer
-        {
-            srcChar += 1;
-            if srcChar >= buffer.bytes.data + buffer.bytes.count
-                srcChar = buffer.bytes.data;
-        }
-
         if <<srcChar == #char "\n"
         {
             line.absOnePastEndPos = it + 1;
@@ -316,7 +345,13 @@ ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
             if buffer.absoluteLineIdx >= xx buffer.lines.count
                 buffer.linesFilled = true;
         }
+
+        srcChar += 1;
+        if srcChar >= buffer.bytes.data + buffer.bytes.count
+            srcChar = buffer.bytes.data;
     }
+    // Ensure the last line runs up to the end of the range
+    line.absOnePastEndPos = absStartPos + sizeBytes;
 }
 
 GetLineLength :: ( line: Line ) -> s64
@@ -333,84 +368,6 @@ GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
     return buffer.bytes[ relPos ];
 }
 
-
-StartShell :: ( appState: *AppState ) -> bool
-{
-    // TODO This is part of the "dummy wrapper" shell config
-    // TODO Allow tweaking this in a setting
-    command: [] string =
-    .[
-        "cmd",
-    ];
-
-    // TODO Do we need to cache / process this?
-    workingDir := get_working_directory();
-
-    success := create_process( *appState.runningProcess, .. command,
-                               working_directory = workingDir,
-                               capture_and_return_output = true,
-                               arg_quoting = Process_Argument_Quoting.NEVER_QUOTE );
-
-    if !success
-        // TODO Diagnostics
-        return false;
-
-    return true;
-}
-
-ExecuteCommand :: ( appState: *AppState ) -> bool
-{
-    result, bytesWritten := write_to_process( *appState.runningProcess, appState.commandLine.input );
-    assert( bytesWritten == appState.commandLine.input.count, "Couldn't write full command" );
-    return result;
-}
-
-ReadShellOutput :: ( appState: *AppState ) -> bool
-{
-    // TODO Do this properly without copies
-    buffer: [1024] u8;
-    // TODO Eventually we need to wait on multiple objects instead of polling/sleeping
-    // (which sadly means we'll need to go full platform-dependant I think)
-    success, output_bytes, error_bytes
-        := read_from_process( *appState.runningProcess, buffer, buffer, timeout_ms = 10 );
-
-    if output_bytes || error_bytes
-    {
-        // TODO To properly support this, we'd have to read from each pipe ourselves
-        // (check the Process module for any way of doing this)
-        assert( (output_bytes == 0) ^ (error_bytes == 0), "Process wrote to stdout & stderr simultaneously" );
-
-        out: string = ---;
-        out.data = buffer.data;
-        out.count = output_bytes + error_bytes;
-        AppendToSourceBuffer( *appState.sourceBuffer, out );
-    }
-
-    // No more output, so wait for it to finish
-    if appState.runningProcess.output.eof && appState.runningProcess.error.eof
-    {
-        success, appState.lastProcessResult = get_process_result( *appState.runningProcess );
-        if success
-        {
-            if appState.lastProcessResult.type == .STILL_RUNNING
-                return true;
-        }
-        else
-        {
-            error_code, error_string := get_error_value_and_string();
-            // TODO Diagnostics
-            //log_error( "Couldn’t get process result for command \"%\": % %", get_quoted_command_string(args), error_code, error_string );
-            kill_process( *appState.runningProcess );
-            appState.lastProcessResult = .{type = .EXITED, exit_code = 1};
-        }
-
-        AppendToSourceBuffer( *appState.sourceBuffer, "\n" );
-        Reset( *appState.runningProcess );
-        return false;
-    }
-
-    return true;
-}
 
 Init :: ( process: *Process )
 {
