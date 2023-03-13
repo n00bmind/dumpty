@@ -120,6 +120,8 @@ main :: ()
 
                         case .BACKSPACE;
                         case .ENTER;
+                        case .PAGE_UP;
+                        case .PAGE_DOWN;
                         //
 
                         case;
