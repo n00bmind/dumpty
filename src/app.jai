@@ -165,10 +165,11 @@ Init :: ( memory: *AppMemory ) -> *AppState
     appState := BootstrapStructWithArena( AppState, offsetof( AppState, "mainArena" ), Gigabytes( 1 ) );
     memory.appState = appState;
 
-    lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
-    assert( success2 );
-    lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
-    assert( success3 );
+    // TODO Should concat with exe path
+    //lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
+    //assert( success2 );
+    //lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
+    //assert( success3 );
 
     Init( *appState.sourceBuffer );
     //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );

@@ -10,10 +10,8 @@
 
 main :: ()
 {
-    path := path_strip_filename( get_path_of_running_executable() );
-    set_working_directory( path ); //join( path, "/.." ) );
-    path = get_working_directory();
-    print( "Working directory is '%'\n", path );
+    runPath := path_strip_filename( get_path_of_running_executable() );
+    print( "Working directory is '%'\n", get_working_directory() );
 
     #if OS == .WINDOWS
     {
@@ -25,6 +23,21 @@ main :: ()
 
         screenWidth := GetSystemMetrics( SM_CXSCREEN );
         screenHeight := GetSystemMetrics( SM_CYSCREEN );
+    }
+
+    dataPath := join( get_path_os_program_data(), "/replr/" );
+    make_directory_if_it_does_not_exist( dataPath );
+
+    settingsPathPath := join( dataPath, "settings_path" );
+    settingsPath, settingsPathOk := read_entire_file( settingsPathPath, zero_terminated = false, log_errors = false );
+    if settingsPathOk
+        // TODO We need to figure out whether this is the same as the last we launched for settings migration etc.
+        print( "Loading settings from '%'\n", settingsPath );
+    else
+    {
+        print( "Initializing default settings path\n" );
+        // Write a default path (the data path)
+        write_entire_file( settingsPathPath, dataPath );
     }
 
     // TODO May want to get more platform specific at some point for events etc? idk
@@ -44,9 +57,10 @@ main :: ()
     appInput: AppInput;
     appMemory: AppMemory;
     appModtime : Apollo_Time;
-    appDLLPath := sprint( "%.dll", APP_DLL_NAME );
+    appDLLName := sprint( "%.dll", APP_DLL_NAME );
+    appDLLPath := join( runPath, appDLLName );
 
-    loadedFace, success := OpenGLLoadFont( "data/fonts/consolas_nf_regular.ttf", 16 );
+    loadedFace, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16 );
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
@@ -66,7 +80,7 @@ main :: ()
         modtime, size, modtimeOk := file_modtime_and_size( appDLLPath );
         if modtimeOk && modtime > appModtime
         {
-            if LoadAppCode( *app, appDLLPath, *appMemory )
+            if LoadAppCode( *app, runPath, appDLLName, *appMemory )
                 appModtime = modtime;
         }
         if !app
@@ -226,13 +240,13 @@ loadNoticeShown := false;
 tempDLLOrdinal := 0;
 oldApp: HMODULE;
 
-LoadAppCode :: ( app: *HMODULE, srcPath: string, appMemory: *AppMemory ) -> bool
+LoadAppCode :: ( app: *HMODULE, runPath: string, srcPath: string, appMemory: *AppMemory ) -> bool
 {
+    tempSrcPath := join( runPath, srcPath );
     // Make a copy of the DLL first so we don't lock it when loading it
     tempDLLName := tprint( "%.temp.%.dll", APP_DLL_NAME, tempDLLOrdinal );
     // The docs explicitly mention using '\', although it appears to work with '/' too..
-    exePath := path_strip_filename( get_path_of_running_executable() );
-    tempDLLPath := tprint( "%/%", exePath, tempDLLName );
+    tempDLLPath := join( runPath, tempDLLName );
 
     if !loadNoticeShown
     {
@@ -240,7 +254,7 @@ LoadAppCode :: ( app: *HMODULE, srcPath: string, appMemory: *AppMemory ) -> bool
         loadNoticeShown = true;
     }
 
-    if copy_file( srcPath, tempDLLPath, silent = true )
+    if copy_file( tempSrcPath, tempDLLPath, silent = true )
     {
         if <<app
             oldApp = <<app;
@@ -322,4 +336,32 @@ Swap :: ( window: Window_Type, vsync := true )
     }
 }
 
+
+ole32    :: #system_library "ole32";
+shell32  :: #system_library "shell32";
+
+WCHAR :: u16;
+PWSTR :: *WCHAR;
+KNOWNFOLDERID :: GUID;
+REFKNOWNFOLDERID :: *KNOWNFOLDERID;
+
+SHGetKnownFolderPath :: ( rfid: REFKNOWNFOLDERID, dwFlags: DWORD, hToken: HANDLE, ppszPath: *PWSTR ) -> HRESULT #foreign shell32;
+CoTaskMemFree :: ( pv: *void ) #foreign ole32;
+
+GetWritableStoragePath :: () -> string
+{
+    FOLDERID_LocalAppData: GUID = string_to_guid( "F1B32785-6FBA-4FCF-9D55-7B8E7F157091" );
+
+    path: PWSTR = null;
+    hr := SHGetKnownFolderPath( *FOLDERID_LocalAppData, 0, null, *path );
+
+    result: string;
+    if hr == S_OK
+    {
+        //result = alloc_string( path, c_style_strlen( buffer.data ) );
+    }
+    CoTaskMemFree( path );
+
+    return result;
+}
 
