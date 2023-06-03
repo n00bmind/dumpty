@@ -9,9 +9,10 @@ build :: ()
 
     // The compiler will set the CWD to the directory containing the current file
     path := get_working_directory();
-    // NOTE Something broke in the last beta update, and now the bin/ dir is created un folder up relative to what we pass here..
+    // NOTE Something broke in the last beta update, and now the bin/ dir specified below is created one folder up relative to what we pass here..
     //set_working_directory( join( path, "/.." ) );
     //path = get_working_directory();
+    // NOTE Shows 'W:\repos\replr\src' as it should
     print( "Working directory for 'build' metaprogram: '%'\n", path );
 
     // Right now it seems there's no way to just pass a path string directly
@@ -19,6 +20,7 @@ build :: ()
     loc.fully_pathed_filename = path;
 
     global_options := get_build_options();
+    // NOTE Writes to 'W:\repos\replr\bin'
     global_options.output_path = "bin";
     global_options.intermediate_path = "bin";
 
