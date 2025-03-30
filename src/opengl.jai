@@ -317,10 +317,10 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
 {
     DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, face: LoadedFace, vertices: *[6] TextVertex )
     {
-        white :: #run make_vector4( 1, 1, 1, 1 );
-        red :: #run make_vector4( 1, 0, 0, 1 );
-        green :: #run make_vector4( 0, 1, 0, 1 );
-        blue :: #run make_vector4( 0, 0, 1, 1 );
+        white :: Vector4.{ 1, 1, 1, 1 };
+        red   :: Vector4.{ 1, 0, 0, 1 };
+        green :: Vector4.{ 0, 1, 0, 1 };
+        blue  :: Vector4.{ 0, 0, 1, 1 };
 
         x := xBase;
         y := yBase;
@@ -334,13 +334,13 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         u1 := (glyph.offset.x + w) / s;
         v1 := (glyph.offset.y + h) / s;
 
-        (<<vertices)[1] = .{ position = make_vector3( x, y, 0 ), color = white, uv = .{ u0, v0 } };
-        (<<vertices)[0] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ u0, v1 } };
-        (<<vertices)[2] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ u1, v0 } };
+        (<<vertices)[1] = .{ position = Vector3.{ x, y, 0 }, color = white, uv = .{ u0, v0 } };
+        (<<vertices)[0] = .{ position = Vector3.{ x, y + h, 0 }, color = white, uv = .{ u0, v1 } };
+        (<<vertices)[2] = .{ position = Vector3.{ x + w, y, 0 }, color = white, uv = .{ u1, v0 } };
 
-        (<<vertices)[4] = .{ position = make_vector3( x + w, y, 0 ), color = white, uv = .{ u1, v0 } };
-        (<<vertices)[3] = .{ position = make_vector3( x, y + h, 0 ), color = white, uv = .{ u0, v1 } };
-        (<<vertices)[5] = .{ position = make_vector3( x + w, y + h, 0 ), color = white, uv = .{ u1, v1 } };
+        (<<vertices)[4] = .{ position = Vector3.{ x + w, y, 0 }, color = white, uv = .{ u1, v0 } };
+        (<<vertices)[3] = .{ position = Vector3.{ x, y + h, 0 }, color = white, uv = .{ u0, v1 } };
+        (<<vertices)[5] = .{ position = Vector3.{ x + w, y + h, 0 }, color = white, uv = .{ u1, v1 } };
     }
 
 
@@ -393,18 +393,18 @@ OpenGLDrawAtlas :: ( state: *OpenGLState, face: LoadedFace )
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
     vertices : [6] TextVertex;
-    white :: #run make_vector4( 1, 1, 1, 1 );
-    red :: #run make_vector4( 1, 0, 0, 1 );
-    green :: #run make_vector4( 0, 1, 0, 1 );
-    blue :: #run make_vector4( 0, 0, 1, 1 );
+    white :: Vector4.{ 1, 1, 1, 1 };
+    red   :: Vector4.{ 1, 0, 0, 1 };
+    green :: Vector4.{ 0, 1, 0, 1 };
+    blue  :: Vector4.{ 0, 0, 1, 1 };
 
-    vertices[1] = .{ position = make_vector3( 0, 0, 0 ), color = white, uv = .{ 0, 0 } };
-    vertices[0] = .{ position = make_vector3( 0, 1024, 0 ), color = white, uv = .{ 0, 1 } };
-    vertices[2] = .{ position = make_vector3( 1024, 0, 0 ), color = white, uv = .{ 1, 0 } };
+    vertices[1] = .{ position = Vector3.{ 0, 0, 0 }, color = white, uv = .{ 0, 0 } };
+    vertices[0] = .{ position = Vector3.{ 0, 1024, 0 }, color = white, uv = .{ 0, 1 } };
+    vertices[2] = .{ position = Vector3.{ 1024, 0, 0 }, color = white, uv = .{ 1, 0 } };
 
-    vertices[4] = .{ position = make_vector3( 1024, 0, 0 ), color = white, uv = .{ 1, 0 } };
-    vertices[3] = .{ position = make_vector3( 0, 1024, 0 ), color = white, uv = .{ 0, 1 } };
-    vertices[5] = .{ position = make_vector3( 1024, 1024, 0 ), color = white, uv = .{ 1, 1 } };
+    vertices[4] = .{ position = Vector3.{ 1024, 0, 0 }, color = white, uv = .{ 1, 0 } };
+    vertices[3] = .{ position = Vector3.{ 0, 1024, 0 }, color = white, uv = .{ 0, 1 } };
+    vertices[5] = .{ position = Vector3.{ 1024, 1024, 0 }, color = white, uv = .{ 1, 1 } };
 
     glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
     glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );

@@ -165,7 +165,7 @@ main :: ()
 
         frameCount += 1;
         // TODO Non-release
-        now := get_time();
+        now := seconds_since_init();
         if now > lastTitleUpdateTimestamp + 0.5
         {
             elapsedSecs := (now - lastTitleUpdateTimestamp);

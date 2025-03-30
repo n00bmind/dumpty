@@ -53,7 +53,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 push( *commandLine.input, str );
                 free( str );
                 
-                appState.lastInputSeconds = get_time();
+                appState.lastInputSeconds = seconds_since_init();
             }
         }
     }
@@ -72,7 +72,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
 
     BlinkTimeMillis :: 900;
-    blink := ~(cast(int)( (get_time() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
+    blink := ~(cast(int)( (seconds_since_init() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
@@ -186,7 +186,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
-    commandString := to_string( commandLine.input );
+    commandString := to_string( commandLine.input.data, commandLine.input.count );
 
     absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx renderer.cellCount.y + 1);
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
