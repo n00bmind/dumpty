@@ -2,6 +2,7 @@
 #import "Compiler";
 #import "System";
 #import "String";
+#import "File";
 
 build :: ()
 {
@@ -62,6 +63,22 @@ build :: ()
         set_build_options( options, w );
 
         add_build_file( "src/first.jai", w );
+    }
+
+    // Test data
+    {
+        builder: String_Builder;
+        builder.allocator = temp;
+
+        buffer: [64] u8;
+        line := string.{ buffer.count, buffer.data };
+
+        for n: 0 .. 65535
+        {
+            print_to_builder( *builder, "%\n", 65536 - n );
+        }
+
+        write_entire_file( "data/lines", *builder );
     }
 
 }
