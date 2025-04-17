@@ -40,7 +40,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 push( *commandLine.input, "\n" );
 
                 if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
-                    AppendToSourceBuffer( *appState.sourceBuffer, "Error executing command\n" );
+                    AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing command\n" );
                 commandLine.input.count = 0;
             }
 
@@ -50,6 +50,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                 // TODO Temp mem!
                 str := character_utf32_to_utf8( value );
+                // TODO Probably should just pass this to the shell instead of managing it ourselves?
                 push( *commandLine.input, str );
                 free( str );
                 
@@ -83,7 +84,7 @@ SourceBuffer :: struct
 {
     MAX_SIZE :: 16 * 1024;
     SIZE_MASK :: MAX_SIZE - 1;
-    MAX_LINES :: 1024;
+    MAX_LINES :: 4096;
     LINES_MASK :: MAX_LINES - 1;
     
     bytes: [] u8;
@@ -181,8 +182,14 @@ Init :: ( memory: *AppMemory ) -> *AppState
     return appState;
 }
 
+
+DebugDrawLineBufferValues :: true;
+DebugLineValuesReservedCols :: 17;
+
 UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine )
 {
+    LineValuesColOffset :: #ifx DebugDrawLineBufferValues then DebugLineValuesReservedCols else 0;
+
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
@@ -209,10 +216,20 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
             dst.backgroundColor = bg;
             dst.flags = 0;
 
-            if col >= lineLength
+            #if DebugDrawLineBufferValues
+                if col < LineValuesColOffset
+                {
+                    char := GetLineBufferCharAt( <<line, col );
+                    dst.glyphIndex = GlyphIndexForChar( char, face );
+                    dst.foregroundColor = PackColor( .{ 0.5, 0.5, 0.5 } );
+                    continue;
+                }
+
+            if col >= lineLength + LineValuesColOffset
             {
                 // Draw current command and cursor on the last line
-                if row == renderer.cellCount.y - 1
+                // TODO Probably should just echo everything straight to the shell?
+                if false // row == renderer.cellCount.y - 1
                 {
                     cmdLineStartPos := lineLength;
                     if col >= cmdLineStartPos && col < cmdLineStartPos + commandString.count
@@ -237,18 +254,8 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                 continue;
             }
 
-            char := GetCharAt( sourceBuffer, <<line, col );
-            if char >= 32 && char < 127
-            {
-                glyph := face.glyphs[ char - 32 ];
-                dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
-            }
-            else
-            {
-                // TODO Unknown symbol should be separate from the cursor glyph
-                // FIXME Also, use the first 32 slots as reserved, but still we can't directly index them like this!
-                dst.glyphIndex = 127;
-            }
+            char := GetCharAt( sourceBuffer, <<line, col - LineValuesColOffset );
+            dst.glyphIndex = GlyphIndexForChar( char, face );
         }
 
         // TODO Line wrapping
@@ -367,6 +374,56 @@ GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 {
     relPos := (line.absStartPos + col) & SourceBuffer.SIZE_MASK;
     return buffer.bytes[ relPos ];
+}
+
+GetLineBufferCharAt :: ( line: Line, col: int ) -> u8
+{
+    LineValuesColOffset :: #ifx DebugDrawLineBufferValues then DebugLineValuesReservedCols else 0;
+
+    MaxDigits :: (LineValuesColOffset - 3) / 2;
+    Separator :: MaxDigits * 2 + 1;
+
+    if col ==
+    {
+        case MaxDigits; return #char ",";
+        case Separator; return #char ":";
+        case;
+        {
+            if col > Separator
+                return #char " ";
+
+            value := line.absStartPos;
+            if col > MaxDigits
+            {
+                col -= (MaxDigits + 1);
+                value = line.absOnePastEndPos;
+            }
+            digit := MaxDigits - col;
+            for 1 .. digit - 1
+            {
+                value /= 10;
+            }
+            // return #char "0" + cast(u8) (digit);
+            return #char "0" + cast(u8) (value % 10);
+        }
+    }
+}
+
+GlyphIndexForChar :: ( char: u8, face: *LoadedFace ) -> u32
+{
+    result: u32;
+    if char >= 32 && char < 127
+    {
+        glyph := face.glyphs[ char - 32 ];
+        result = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+    }
+    else
+    {
+        // TODO Unknown symbol should be separate from the cursor glyph
+        // FIXME Also, use the first 32 slots as reserved, but still we can't directly index them like this!
+        result = 127;
+    }
+    return result;
 }
 
 
