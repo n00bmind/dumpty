@@ -28,6 +28,13 @@ ExecuteShellCommand :: ( process: *Process, command: [] u8 ) -> bool
     return result;
 }
 
+WriteToShell :: ( process: *Process, str: string ) -> bool
+{
+    result, bytesWritten := write_to_process( process, xx str );
+    assert( bytesWritten == str.count, "Couldn't write full string" );
+    return result;
+}
+
 ReadShellOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> bool, Process_Result
 {
     // TODO Do this properly without copies (call read_pipe directly)

@@ -26,19 +26,34 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
             if it.key_code ==
             {
                 case .PAGE_UP;
-                appState.lineOffset += renderer.cellCount.y / 2;
+                {
+                    newOffset := appState.lineOffset;
+                    newOffset += renderer.cellCount.y / 2;
+                    newOffset = Min( newOffset, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
+                    // Still need to check we're not showing too far back into sourceBuffer (wrapping around content)
+                    absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absoluteLineIdx, newOffset,
+                                                                    renderer.cellCount.y );
+                    line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LINES_MASK ];
+                    if line.absStartPos < appState.sourceBuffer.absoluteHeadPos - SourceBuffer.MAX_SIZE
+                        newOffset = appState.lineOffset;
+
+                    appState.lineOffset = newOffset;
+                }
                 case .PAGE_DOWN;
-                appState.lineOffset -= renderer.cellCount.y / 2;
+                {
+                    appState.lineOffset -= renderer.cellCount.y / 2;
+                    appState.lineOffset = Max( 0, appState.lineOffset );
+                }
 
                 case .BACKSPACE;
+                // WriteToShell( *appState.shellProcess, "\x08" );
                 if commandLine.input.count > 0
                     pop( *commandLine.input );
 
                 case .ENTER;
-                // Send as text too
-                // TODO Is this shell dependent?
+                // WriteToShell( *appState.shellProcess, "\n" );
+                //
                 push( *commandLine.input, "\n" );
-
                 if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
                     AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing command\n" );
                 commandLine.input.count = 0;
@@ -50,7 +65,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                 // TODO Temp mem!
                 str := character_utf32_to_utf8( value );
-                // TODO Probably should just pass this to the shell instead of managing it ourselves?
+                // WriteToShell( *appState.shellProcess, str );
                 push( *commandLine.input, str );
                 free( str );
                 
@@ -58,7 +73,6 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
             }
         }
     }
-    appState.lineOffset = clamp( appState.lineOffset, 0, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
 
     if IsRunning( appState.shellProcess )
     {
@@ -90,9 +104,9 @@ SourceBuffer :: struct
     bytes: [] u8;
     lines: [] Line;
     // Points to the next character to write. Absolute, so needs to be masked
-    absoluteHeadPos: u64;
+    absoluteHeadPos: s64;
     // Same as above, but for the *current* (open) line in the lines buffer
-    absoluteLineIdx: u64;
+    absoluteLineIdx: s64;
     bytesFilled: bool;
     linesFilled: bool;
 }
@@ -104,27 +118,23 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 {
     assert( data.count < buffer.bytes.count );
 
-    relPos := cast(s64)(buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK);
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
     available := buffer.bytes.count - relPos;
 
     // Do we need to split the copy? (if we're approaching the end of the buffer)
     if( data.count < available )
     {
         memcpy( buffer.bytes.data + relPos, data.data, data.count );
-        // FIXME This seems wrong, we're passing relative buffer positions but the lines we're building in there expect absolute!
-        ParseNewLines( buffer, relPos, data.count );
     }
     else
     {
         memcpy( buffer.bytes.data + relPos, data.data, available );
         memcpy( buffer.bytes.data, data.data + available, data.count - available );
-
-        // FIXME This seems wrong, we're passing relative buffer positions but the lines we're building in there expect absolute!
-        ParseNewLines( buffer, relPos, available );
-        ParseNewLines( buffer, 0, data.count - available );
     }
-    buffer.absoluteHeadPos += xx data.count;
-    if buffer.absoluteHeadPos >= xx buffer.bytes.count
+    ParseNewLines( buffer, buffer.absoluteHeadPos, data.count );
+
+    buffer.absoluteHeadPos += data.count;
+    if buffer.absoluteHeadPos >= buffer.bytes.count
         buffer.bytesFilled = true;
 }
 
@@ -182,7 +192,6 @@ Init :: ( memory: *AppMemory ) -> *AppState
     return appState;
 }
 
-
 DebugDrawLineBufferValues :: true;
 DebugLineValuesReservedCols :: 17;
 
@@ -195,7 +204,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
 
     commandString := to_string( commandLine.input.data, commandLine.input.count );
 
-    absStartLineIdx: u64 = (sourceBuffer.absoluteLineIdx - xx lineOffset - xx renderer.cellCount.y + 1);
+    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
     // TODO Do we wanna initially fill the window from the top down or the bottom up?
     //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
@@ -204,11 +213,11 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     line := *sourceBuffer.lines[ relStartLineIdx ];
 
     dst := renderer.cells.data;
-    for row: 0..renderer.cellCount.y - 1
+    for y: 0..renderer.cellCount.y - 1
     {
         lineLength := GetLineLength( <<line );
 
-        for col: 0..renderer.cellCount.x - 1
+        for x: 0..renderer.cellCount.x - 1
         {
             defer dst += 1;
 
@@ -216,7 +225,10 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
             dst.backgroundColor = bg;
             dst.flags = 0;
 
+            col := x;
+
             #if DebugDrawLineBufferValues
+            {
                 if col < LineValuesColOffset
                 {
                     char := GetLineBufferCharAt( <<line, col );
@@ -225,11 +237,15 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                     continue;
                 }
 
-            if col >= lineLength + LineValuesColOffset
+                // Offset everything else left
+                col -= LineValuesColOffset;
+            }
+
+            if col >= lineLength
             {
                 // Draw current command and cursor on the last line
                 // TODO Probably should just echo everything straight to the shell?
-                if false // row == renderer.cellCount.y - 1
+                if lineOffset == 0 && y == renderer.cellCount.y - 1
                 {
                     cmdLineStartPos := lineLength;
                     if col >= cmdLineStartPos && col < cmdLineStartPos + commandString.count
@@ -254,7 +270,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                 continue;
             }
 
-            char := GetCharAt( sourceBuffer, <<line, col - LineValuesColOffset );
+            char := GetCharAt( sourceBuffer, <<line, col );
             dst.glyphIndex = GlyphIndexForChar( char, face );
         }
 
@@ -350,7 +366,7 @@ ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
             line.absOnePastEndPos = it + 1;
 
             buffer.absoluteLineIdx += 1;
-            if buffer.absoluteLineIdx >= xx buffer.lines.count
+            if buffer.absoluteLineIdx >= buffer.lines.count
                 buffer.linesFilled = true;
         }
 
@@ -370,6 +386,11 @@ GetLineLength :: ( line: Line ) -> s64
     return result;
 }
 
+GetFirstScreenLineAbsIndex :: ( absLineIdx: s64, lineOffset: s64, rendererRowCount: s64 ) -> s64
+{
+    return absLineIdx - lineOffset - rendererRowCount + 1;
+}
+
 GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 {
     relPos := (line.absStartPos + col) & SourceBuffer.SIZE_MASK;
@@ -383,30 +404,36 @@ GetLineBufferCharAt :: ( line: Line, col: int ) -> u8
     MaxDigits :: (LineValuesColOffset - 3) / 2;
     Separator :: MaxDigits * 2 + 1;
 
-    if col ==
+    #if DebugDrawLineBufferValues
     {
-        case MaxDigits; return #char ",";
-        case Separator; return #char ":";
-        case;
+        if col ==
         {
-            if col > Separator
+            case MaxDigits; return #char ",";
+            case Separator; return #char ":";
+            case;
+            {
+                if col > Separator
                 return #char " ";
 
-            value := line.absStartPos;
-            if col > MaxDigits
-            {
-                col -= (MaxDigits + 1);
-                value = line.absOnePastEndPos;
+                value := line.absStartPos & SourceBuffer.SIZE_MASK;
+                // value := line.absStartPos;
+                if col > MaxDigits
+                {
+                    col -= (MaxDigits + 1);
+                    value = line.absOnePastEndPos & SourceBuffer.SIZE_MASK;
+                    // value = line.absOnePastEndPos;
+                }
+                digit := MaxDigits - col;
+                for 1 .. digit - 1
+                {
+                    value /= 10;
+                }
+                // return #char "0" + cast(u8) (digit);
+                return #char "0" + cast(u8) (value % 10);
             }
-            digit := MaxDigits - col;
-            for 1 .. digit - 1
-            {
-                value /= 10;
-            }
-            // return #char "0" + cast(u8) (digit);
-            return #char "0" + cast(u8) (value % 10);
         }
     }
+    return 0;
 }
 
 GlyphIndexForChar :: ( char: u8, face: *LoadedFace ) -> u32
