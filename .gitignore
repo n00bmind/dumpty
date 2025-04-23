@@ -9,3 +9,4 @@ bin/*
 !bin/data
 
 *.rdbg
+/data/huge

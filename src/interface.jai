@@ -69,4 +69,5 @@ LoadedFace :: struct
 
 
 UpdateAndRenderFunc :: #type ( input: AppInput, memory: *AppMemory, renderer: *RendererState );
+ShutdownFunc :: #type ( memory: *AppMemory );
 

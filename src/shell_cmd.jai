@@ -28,25 +28,51 @@ ExecuteShellCommand :: ( process: *Process, command: [] u8 ) -> bool
     return result;
 }
 
-WriteToShell :: ( process: *Process, str: string ) -> bool
+
+ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppState ) -> bool
+{
+    Reset( *appState.builtinProcess );
+
+    // Extract command
+    found, cmd, args := split_from_left( xx command, #char " " );
+
+    // TODO builtins table
+    if cmd == "#run"
+    {
+        cmdArgs := break_command_into_strings( args );
+        success := create_process( process, ..cmdArgs,
+                                   working_directory = get_working_directory(),
+                                   capture_and_return_output = true,
+                                   arg_quoting = Process_Argument_Quoting.NEVER_QUOTE );
+
+        // TODO Diagnostics
+        return success;
+    }
+    else
+    {
+        AppendToSourceBuffer( *appState.sourceBuffer, tprint( "<<replr>> Unknown builtin: %\n", cmd ) );
+        return true;
+    }
+}
+
+
+WriteToProcess :: ( process: *Process, str: string ) -> bool
 {
     result, bytesWritten := write_to_process( process, xx str );
     assert( bytesWritten == str.count, "Couldn't write full string" );
     return result;
 }
 
-ReadShellOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> bool, Process_Result
+ReadProcessOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> bool, Process_Result
 {
     // TODO Do this properly without copies (call read_pipe directly)
-    outBuffer: [1024] u8;
+    outBuffer := NewArray( 16*1024*1024, u8,, temp );
     errBuffer: [1024] u8;
     // TODO Eventually we need to wait on multiple objects instead of polling/sleeping
     // (which sadly means we'll need to go full platform-dependant I think)
     success, output_bytes, error_bytes
         := read_from_process( process, outBuffer, errBuffer, timeout_ms = 10 );
 
-    // FIXME There's no real way to correctly interleave these as we have no way of knowing what was written when..
-    // I suppose for this we'd need the full-on integration that jfhs was implementing on his project?
     if output_bytes
     {
         out: string = ---;

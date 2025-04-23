@@ -46,16 +46,25 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 }
 
                 case .BACKSPACE;
-                // WriteToShell( *appState.shellProcess, "\x08" );
+                // WriteToProcess( *appState.shellProcess, "\x08" );
                 if commandLine.input.count > 0
                     pop( *commandLine.input );
 
                 case .ENTER;
-                // WriteToShell( *appState.shellProcess, "\n" );
-                //
-                push( *commandLine.input, "\n" );
-                if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
-                    AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing command\n" );
+                if begins_with( xx commandLine.input, "#" )
+                {
+                    AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) commandLine.input ) );
+                    if !ExecuteBuiltinCommand( *appState.builtinProcess, commandLine.input, appState )
+                        AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing builtin command\n" );
+                }
+                else
+                {
+                    // WriteToProcess( *appState.shellProcess, "\n" );
+                    //
+                    push( *commandLine.input, "\n" );
+                    if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
+                        AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
+                }
                 commandLine.input.count = 0;
             }
 
@@ -65,7 +74,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                 // TODO Temp mem!
                 str := character_utf32_to_utf8( value );
-                // WriteToShell( *appState.shellProcess, str );
+                // WriteToProcess( *appState.shellProcess, str );
                 push( *commandLine.input, str );
                 free( str );
                 
@@ -74,9 +83,28 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    if IsRunning( appState.shellProcess )
+    if IsRunning( appState.builtinProcess )
     {
-        alive, result := ReadShellOutput( *appState.shellProcess, *appState.sourceBuffer );
+        alive, result := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
+        if result.type == .EXITED
+        {
+            if result.exit_code
+                print( "<<replr>> Builtin process exited with error code %.\n", result.exit_code );
+            deinit( *appState.builtinProcess );
+
+            WriteToProcess( *appState.shellProcess, "\n" );
+        }
+        else if result.type == .FAILED_TO_LAUNCH
+        {
+            print( "<<replr>> Builtin process failed to launch (%).\n", result.exit_code );
+            deinit( *appState.builtinProcess );
+
+            WriteToProcess( *appState.shellProcess, "\n" );
+        }
+    }
+    else if IsRunning( appState.shellProcess )
+    {
+        alive, result := ReadProcessOutput( *appState.shellProcess, *appState.sourceBuffer );
         if !alive
         {
             print( "Shell process died (%).\n", result );
@@ -93,10 +121,21 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
 }
 
+#program_export
+Shutdown :: ( memory: *AppMemory )
+{
+    appState := cast(*AppState) memory.appState;
+
+    Shutdown( *appState.shellProcess );
+    Shutdown( *appState.builtinProcess );
+}
+
+
+#scope_module
 
 SourceBuffer :: struct
 {
-    MAX_SIZE :: 16 * 1024;
+    MAX_SIZE :: 16 * 1024 * 1024;
     SIZE_MASK :: MAX_SIZE - 1;
     MAX_LINES :: 4096;
     LINES_MASK :: MAX_LINES - 1;
@@ -116,7 +155,7 @@ SourceBuffer :: struct
 // TODO For the general case we'll actually want to be able to get a range in the buffer to copy straight into
 AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 {
-    assert( data.count < buffer.bytes.count );
+    assert( data.count <= buffer.bytes.count );
 
     relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
     available := buffer.bytes.count - relPos;
@@ -139,6 +178,30 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 }
 
 
+#scope_module
+
+#import "String";
+
+AppState :: struct
+{
+    mainArena: MemoryArena;
+
+    sourceBuffer: SourceBuffer;
+    lineOffset: s64;
+
+    commandLine: CommandLine;
+    shellProcess: Process;
+    builtinProcess: Process;
+
+    lastInputSeconds: float64;
+}
+
+Reset :: ( process: *Process )
+{
+    deinit( process );
+    Init( process );
+}
+
 #scope_file
 
 #import "File";
@@ -154,19 +217,6 @@ CommandLine :: struct
 {
     input: [..] u8;
     // TODO Cursor pos etc
-}
-
-AppState :: struct
-{
-    mainArena: MemoryArena;
-
-    sourceBuffer: SourceBuffer;
-    lineOffset: s64;
-
-    commandLine: CommandLine;
-    shellProcess: Process;
-
-    lastInputSeconds: float64;
 }
 
 Init :: ( memory: *AppMemory ) -> *AppState
@@ -188,11 +238,12 @@ Init :: ( memory: *AppMemory ) -> *AppState
     array_reserve( *appState.commandLine.input, 1024 );
 
     Init( *appState.shellProcess );
+    Init( *appState.builtinProcess );
 
     return appState;
 }
 
-DebugDrawLineBufferValues :: true;
+DebugDrawLineBufferValues :: false;
 DebugLineValuesReservedCols :: 17;
 
 UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine )
@@ -465,16 +516,16 @@ Init :: ( process: *Process )
         assert( false, "Implement me" );
 }
 
-Reset :: ( process: *Process )
-{
-    deinit( process );
-    Init( process );
-}
-
 IsRunning :: ( process: Process ) -> bool
 {
     #if OS == .WINDOWS
         return process.info.hProcess != INVALID_HANDLE_VALUE;
     else
         assert( false, "Implement me" );
+}
+
+Shutdown :: ( process: *Process )
+{
+    kill_process( process );
+    deinit( process );
 }

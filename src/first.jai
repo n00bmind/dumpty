@@ -180,6 +180,8 @@ main :: ()
         }
     }
 
+    Shutdown( *appMemory );
+
     exit( 0 );
 }
 
@@ -236,6 +238,7 @@ InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s3
 
 // App API
 UpdateAndRender: UpdateAndRenderFunc = null;
+Shutdown: ShutdownFunc = null;
 loadNoticeShown := false;
 tempDLLOrdinal := 0;
 oldApp: HMODULE;
@@ -265,6 +268,9 @@ LoadAppCode :: ( app: *HMODULE, runPath: string, srcPath: string, appMemory: *Ap
             UpdateAndRender = cast(type_of(UpdateAndRender)) GetProcAddress( <<app, "UpdateAndRender" );
             //print( "Found 'UpdateAndRender' func at %\n", UpdateAndRender );
             assert( UpdateAndRender != null );
+
+            Shutdown = cast(type_of(Shutdown)) GetProcAddress( <<app, "Shutdown" );
+            assert( Shutdown != null );
 
             FreeLibrary( oldApp );
             tempDLLOrdinal = 1 - tempDLLOrdinal;
