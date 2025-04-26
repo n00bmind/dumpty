@@ -19,8 +19,6 @@ main :: ()
         // TODO Find and call the newer function for Win10
         //SetProcessDPIAwareContext( .. );
 
-        timeBeginPeriod(1);
-
         screenWidth := GetSystemMetrics( SM_CXSCREEN );
         screenHeight := GetSystemMetrics( SM_CYSCREEN );
     }

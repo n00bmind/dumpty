@@ -83,6 +83,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
+    BlinkTimeMillis :: 500;
+    WaitForAllOpenHandles( appState, BlinkTimeMillis );
+
     if IsRunning( appState.builtinProcess )
     {
         alive, result := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
@@ -114,8 +117,11 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    BlinkTimeMillis :: 900;
-    blink := ~(cast(int)( (seconds_since_init() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
+    // blink := ~(cast(int)( (seconds_since_init() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
+    millis := cast(int)( seconds_since_init() * 1000 );
+    remainder := millis / BlinkTimeMillis;
+    blink := remainder & 1;
+    print( "% -> % = %\n", millis, remainder, ifx blink "ON" else "OFF" );
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
@@ -200,6 +206,14 @@ Reset :: ( process: *Process )
 {
     deinit( process );
     Init( process );
+}
+
+IsRunning :: ( process: Process ) -> bool
+{
+    #if OS == .WINDOWS
+        return process.info.hProcess != INVALID_HANDLE_VALUE;
+    else
+        assert( false, "Implement me" );
 }
 
 #scope_file
@@ -512,14 +526,6 @@ Init :: ( process: *Process )
 
     #if OS == .WINDOWS
         process.info.hProcess = INVALID_HANDLE_VALUE;
-    else
-        assert( false, "Implement me" );
-}
-
-IsRunning :: ( process: Process ) -> bool
-{
-    #if OS == .WINDOWS
-        return process.info.hProcess != INVALID_HANDLE_VALUE;
     else
         assert( false, "Implement me" );
 }
