@@ -83,8 +83,14 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    BlinkTimeMillis :: 500;
-    WaitForAllOpenHandles( appState, BlinkTimeMillis );
+    BlinkTimeMillis :: 750;
+    nowMs := cast(int)( seconds_since_init() * 1000 );
+    // Compute how many millis to wait until the next cursor blink switching
+    remainder := (nowMs / BlinkTimeMillis + 1) * BlinkTimeMillis - nowMs;
+
+    // NOTE Unsure why but we're getting woken up much more often than refterm does
+    // presumably there's more events going to our window? Unsure if worth investigating..
+    WaitForAllOpenHandles( appState, remainder );
 
     if IsRunning( appState.builtinProcess )
     {
@@ -117,11 +123,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    // blink := ~(cast(int)( (seconds_since_init() - appState.lastInputSeconds) * 1000 / BlinkTimeMillis )) & 1;
-    millis := cast(int)( seconds_since_init() * 1000 );
-    remainder := millis / BlinkTimeMillis;
-    blink := remainder & 1;
-    print( "% -> % = %\n", millis, remainder, ifx blink "ON" else "OFF" );
+    nowMs = cast(int)( seconds_since_init() * 1000 );
+    blink := (nowMs / BlinkTimeMillis) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
     UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );

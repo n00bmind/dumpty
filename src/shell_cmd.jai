@@ -105,8 +105,6 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
     if timeoutMs >= 0
         timeout = cast(u32) timeoutMs;
 
-     // TODO refterm uses MsgWaitForMultipleObjects here, which I think also wakes it up
-     // when the main window msg queue gets new events
     result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout,
                                          QS_ALLINPUT );
     if result >= WAIT_ABANDONED_0 && result != WAIT_TIMEOUT
