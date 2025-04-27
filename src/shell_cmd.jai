@@ -105,14 +105,18 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
     if timeoutMs >= 0
         timeout = cast(u32) timeoutMs;
 
-    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout,
-                                         QS_ALLINPUT );
+    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_ALLINPUT );
+
     if result >= WAIT_ABANDONED_0 && result != WAIT_TIMEOUT
     {
         // TODO Logs / diagnotics
         log_error("Unable to read command's output.\n");
         return false;
     }
+    // else
+    // {
+    //     print( "MsgWaitForMultipleObjects result: %\n", result );
+    // }
 }
 else
 {
@@ -124,31 +128,37 @@ else
 
 ReadProcessOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> bool, Process_Result
 {
-    // TODO Do this properly without copies (call read_pipe directly)
-    outBuffer := NewArray( 16*1024*1024, u8,, temp );
-    errBuffer: [1024] u8;
-    // TODO Eventually we need to wait on multiple objects instead of polling/sleeping
-    // (which sadly means we'll need to go full platform-dependant I think)
-    success, output_bytes, error_bytes
-        := read_from_process( process, outBuffer, errBuffer, timeout_ms = 0 );
+    absStartP := sourceBuffer.absoluteHeadPos;
 
-    if output_bytes
+    outBytes, errBytes: s64;
+    if !process.output.eof
     {
-        out: string = ---;
-        out.data = outBuffer.data;
-        out.count = output_bytes;
-        AppendToSourceBuffer( sourceBuffer, out );
+        range := GetNextWriteableRange( sourceBuffer );
+
+        success: bool;
+        success, outBytes = read_pipe( *process.output, range );
+
+        if outBytes
+            CommitWrite( sourceBuffer, outBytes );
+    }
+    if !process.error.eof
+    {
+        range := GetNextWriteableRange( sourceBuffer );
+
+        success: bool;
+        success, errBytes = read_pipe( *process.error, range );
+
+        if errBytes
+            CommitWrite( sourceBuffer, errBytes );
     }
 
-    if error_bytes
-    {
-        out: string = ---;
-        out.data = errBuffer.data;
-        out.count = error_bytes;
-        AppendToSourceBuffer( sourceBuffer, out );
-    }
+    totalBytes := outBytes + errBytes;
+    if totalBytes > 0
+        ParseNewLines( sourceBuffer, absStartP, totalBytes );
 
-    result: Process_Result;
+
+    success := true;
+    result: Process_Result = .{ type = .STILL_RUNNING };
     // No more output, so check if it's been killed
     if process.output.eof && process.error.eof
     {

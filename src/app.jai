@@ -88,8 +88,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     // Compute how many millis to wait until the next cursor blink switching
     remainder := (nowMs / BlinkTimeMillis + 1) * BlinkTimeMillis - nowMs;
 
-    // NOTE Unsure why but we're getting woken up much more often than refterm does
-    // presumably there's more events going to our window? Unsure if worth investigating..
+    // FIXME Unsure why but we're getting woken up constantly rn..
+    // *something* we're doing after separating the wait from the pipe reads seems to cause our message queue to be spammed?
+    // This seems to only happen whenever our window has the focus for some reason
     WaitForAllOpenHandles( appState, remainder );
 
     if IsRunning( appState.builtinProcess )
@@ -111,7 +112,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
             WriteToProcess( *appState.shellProcess, "\n" );
         }
     }
-    else if IsRunning( appState.shellProcess )
+    if IsRunning( appState.shellProcess )
     {
         alive, result := ReadProcessOutput( *appState.shellProcess, *appState.sourceBuffer );
         if !alive
@@ -142,6 +143,8 @@ Shutdown :: ( memory: *AppMemory )
 
 #scope_module
 
+#import "String";
+
 SourceBuffer :: struct
 {
     MAX_SIZE :: 16 * 1024 * 1024;
@@ -161,7 +164,37 @@ SourceBuffer :: struct
 #assert( IsPowerOfTwo( SourceBuffer.MAX_SIZE ) );
 #assert( IsPowerOfTwo( SourceBuffer.MAX_LINES ) );
 
-// TODO For the general case we'll actually want to be able to get a range in the buffer to copy straight into
+GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [] u8
+{
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
+
+    maxAvailableCount := buffer.bytes.count - relPos;
+    count := Min( maxCount, maxAvailableCount );
+
+    return .{ count, buffer.bytes.data + relPos };
+}
+
+CommitWrite :: ( buffer: *SourceBuffer, count: s64 ) -> bool
+{
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
+    maxAvailableCount := buffer.bytes.count - relPos;
+
+    if( count <= maxAvailableCount )
+    {
+        buffer.absoluteHeadPos += count;
+        if buffer.absoluteHeadPos >= buffer.bytes.count
+            buffer.bytesFilled = true;
+
+        return true;
+    }
+    else
+    {
+        // This should never be happening, so assert even if we're handling it
+        assert( false && "Trying to commit data that doesnt fit in the available range" );
+        return false;
+    }
+}
+
 AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 {
     assert( data.count <= buffer.bytes.count );
@@ -186,10 +219,39 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
         buffer.bytesFilled = true;
 }
 
+// TODO Test all this absolute-relative line positions malarkey again
+ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
+{
+    srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SIZE_MASK ];
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LINES_MASK ];
 
-#scope_module
+    // FIXME We obvs want to do this faster, at least 16 chars at a time
+    for absStartPos .. absStartPos + sizeBytes - 1
+    {
+        if <<srcChar == #char "\n"
+        {
+            line.absOnePastEndPos = it + 1;
 
-#import "String";
+            line += 1;
+            if line >= buffer.lines.data + buffer.lines.count
+                line = buffer.lines.data;
+            // Start a new, initially empty line
+            line.absStartPos = it + 1;
+            line.absOnePastEndPos = it + 1;
+
+            buffer.absoluteLineIdx += 1;
+            if buffer.absoluteLineIdx >= buffer.lines.count
+                buffer.linesFilled = true;
+        }
+
+        srcChar += 1;
+        if srcChar >= buffer.bytes.data + buffer.bytes.count
+            srcChar = buffer.bytes.data;
+    }
+    // Ensure the last line runs up to the end of the range
+    line.absOnePastEndPos = absStartPos + sizeBytes;
+}
+
 
 AppState :: struct
 {
@@ -411,39 +473,6 @@ Init :: ( buffer: *SourceBuffer )
     free( buffer.lines.data );
     buffer.lines, base = NewArray( SourceBuffer.MAX_LINES, Line );
     assert( base == buffer.lines.data );
-}
-
-// TODO Test all this absolute-relative line positions malarkey again
-ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
-{
-    srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SIZE_MASK ];
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LINES_MASK ];
-
-    // FIXME We obvs want to do this faster, at least 16 chars at a time
-    for absStartPos .. absStartPos + sizeBytes - 1
-    {
-        if <<srcChar == #char "\n"
-        {
-            line.absOnePastEndPos = it + 1;
-
-            line += 1;
-            if line >= buffer.lines.data + buffer.lines.count
-                line = buffer.lines.data;
-            // Start a new, initially empty line
-            line.absStartPos = it + 1;
-            line.absOnePastEndPos = it + 1;
-
-            buffer.absoluteLineIdx += 1;
-            if buffer.absoluteLineIdx >= buffer.lines.count
-                buffer.linesFilled = true;
-        }
-
-        srcChar += 1;
-        if srcChar >= buffer.bytes.data + buffer.bytes.count
-            srcChar = buffer.bytes.data;
-    }
-    // Ensure the last line runs up to the end of the range
-    line.absOnePastEndPos = absStartPos + sizeBytes;
 }
 
 GetLineLength :: ( line: Line ) -> s64
