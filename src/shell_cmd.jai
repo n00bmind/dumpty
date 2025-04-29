@@ -154,7 +154,7 @@ ReadProcessOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> bool,
 
     totalBytes := outBytes + errBytes;
     if totalBytes > 0
-        ParseNewLines( sourceBuffer, absStartP, totalBytes );
+        ParseLines( sourceBuffer, absStartP, totalBytes );
 
 
     success := true;

@@ -33,8 +33,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     // Still need to check we're not showing too far back into sourceBuffer (wrapping around content)
                     absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absoluteLineIdx, newOffset,
                                                                     renderer.cellCount.y );
-                    line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LINES_MASK ];
-                    if line.absStartPos < appState.sourceBuffer.absoluteHeadPos - SourceBuffer.MAX_SIZE
+                    line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LinesMask ];
+                    if line.absStartPos < appState.sourceBuffer.absoluteHeadPos - SourceBuffer.MaxSize
                         newOffset = appState.lineOffset;
 
                     appState.lineOffset = newOffset;
@@ -88,9 +88,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     // Compute how many millis to wait until the next cursor blink switching
     remainder := (nowMs / BlinkTimeMillis + 1) * BlinkTimeMillis - nowMs;
 
-    // FIXME Unsure why but we're getting woken up constantly rn..
-    // *something* we're doing after separating the wait from the pipe reads seems to cause our message queue to be spammed?
+    // FIXME Unsure why but we're getting woken up constantly rn.. *something* seems to cause our message queue to be spammed?
     // This seems to only happen whenever our window has the focus for some reason
+    // Even more fun! Seems to happen on the desktop and not on the laptop!?
     WaitForAllOpenHandles( appState, remainder );
 
     if IsRunning( appState.builtinProcess )
@@ -147,10 +147,10 @@ Shutdown :: ( memory: *AppMemory )
 
 SourceBuffer :: struct
 {
-    MAX_SIZE :: 16 * 1024 * 1024;
-    SIZE_MASK :: MAX_SIZE - 1;
-    MAX_LINES :: 4096;
-    LINES_MASK :: MAX_LINES - 1;
+    MaxSize :: 16 * 1024 * 1024;
+    SizeMask :: MaxSize - 1;
+    MaxLines :: 4096;
+    LinesMask :: MaxLines - 1;
     
     bytes: [] u8;
     lines: [] Line;
@@ -161,12 +161,12 @@ SourceBuffer :: struct
     bytesFilled: bool;
     linesFilled: bool;
 }
-#assert( IsPowerOfTwo( SourceBuffer.MAX_SIZE ) );
-#assert( IsPowerOfTwo( SourceBuffer.MAX_LINES ) );
+#assert( IsPowerOfTwo( SourceBuffer.MaxSize ) );
+#assert( IsPowerOfTwo( SourceBuffer.MaxLines ) );
 
 GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [] u8
 {
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
 
     maxAvailableCount := buffer.bytes.count - relPos;
     count := Min( maxCount, maxAvailableCount );
@@ -176,7 +176,7 @@ GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [
 
 CommitWrite :: ( buffer: *SourceBuffer, count: s64 ) -> bool
 {
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
     maxAvailableCount := buffer.bytes.count - relPos;
 
     if( count <= maxAvailableCount )
@@ -199,7 +199,7 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 {
     assert( data.count <= buffer.bytes.count );
 
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SIZE_MASK;
+    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
     available := buffer.bytes.count - relPos;
 
     // Do we need to split the copy? (if we're approaching the end of the buffer)
@@ -212,7 +212,7 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
         memcpy( buffer.bytes.data + relPos, data.data, available );
         memcpy( buffer.bytes.data, data.data + available, data.count - available );
     }
-    ParseNewLines( buffer, buffer.absoluteHeadPos, data.count );
+    ParseLines( buffer, buffer.absoluteHeadPos, data.count );
 
     buffer.absoluteHeadPos += data.count;
     if buffer.absoluteHeadPos >= buffer.bytes.count
@@ -220,36 +220,112 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 }
 
 // TODO Test all this absolute-relative line positions malarkey again
-ParseNewLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
+ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
-    srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SIZE_MASK ];
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LINES_MASK ];
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
 
-    // FIXME We obvs want to do this faster, at least 16 chars at a time
-    for absStartPos .. absStartPos + sizeBytes - 1
+    #if false
     {
-        if <<srcChar == #char "\n"
+        srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SizeMask ];
+
+        // FIXME We obvs want to do this faster, at least 16 chars at a time
+        for absStartPos .. absStartPos + sizeBytes - 1
         {
-            line.absOnePastEndPos = it + 1;
+            if <<srcChar == #char "\n"
+            {
+                line.absOnePastEndPos = it + 1;
+
+                line += 1;
+                if line >= buffer.lines.data + buffer.lines.count
+                line = buffer.lines.data;
+                // Start a new, initially empty line
+                line.absStartPos = it + 1;
+                line.absOnePastEndPos = it + 1;
+
+                buffer.absoluteLineIdx += 1;
+                if buffer.absoluteLineIdx >= buffer.lines.count
+                buffer.linesFilled = true;
+            }
+
+            srcChar += 1;
+            if srcChar >= buffer.bytes.data + buffer.bytes.count
+            srcChar = buffer.bytes.data;
+        }
+        // Ensure the last line runs up to the end of the range for now
+        line.absOnePastEndPos = absStartPos + sizeBytes;
+    }
+    else
+    {
+        nl := u8.[ 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa ];
+        nlData := nl.data;
+        #asm
+        {
+            // pxor zero: vec, zero;
+            movdqu carriage: vec, [nlData];
+            // pshufb carriage, zero;
+        }
+
+        parsed: s64 = 0;
+        remaining := sizeBytes - parsed;
+        while remaining > 0
+        {
+            relP := (absStartPos + parsed) & SourceBuffer.SizeMask;
+            src := *buffer.bytes[ relP ];
+
+            bufferRemaining := Min( buffer.bytes.count - relP, remaining );
+            while bufferRemaining >= 16
+            {
+                found := false;
+                #asm
+                {
+                    movdqu batch:, [src];
+                    movdqu testC:, batch;
+                    pcmpeqb testC, carriage;
+
+                    pmovmskb test:, testC;
+                    mov.8 [*found], test;
+                }
+
+                if found
+                {
+                    advance := 0;
+                    #asm
+                    {
+                        tzcnt advance, test;
+                    }
+                    src += advance;
+                    parsed += advance;
+                    remaining -= advance;
+                    break;
+                }
+
+                src += 16;
+                parsed += 16;
+                remaining -= 16;
+            }
+
+            p := absStartPos + parsed;
+            assert( buffer.bytes[p] == #char "\n" );
+
+            // Complete currently open line
+            line.absOnePastEndPos = p + 1;
 
             line += 1;
             if line >= buffer.lines.data + buffer.lines.count
                 line = buffer.lines.data;
+
             // Start a new, initially empty line
-            line.absStartPos = it + 1;
-            line.absOnePastEndPos = it + 1;
+            line.absStartPos = p + 1;
+            line.absOnePastEndPos = p + 1;
 
             buffer.absoluteLineIdx += 1;
             if buffer.absoluteLineIdx >= buffer.lines.count
                 buffer.linesFilled = true;
         }
 
-        srcChar += 1;
-        if srcChar >= buffer.bytes.data + buffer.bytes.count
-            srcChar = buffer.bytes.data;
+        // Ensure the last line runs up to the end of the range for now
+        line.absOnePastEndPos = absStartPos + sizeBytes;
     }
-    // Ensure the last line runs up to the end of the range
-    line.absOnePastEndPos = absStartPos + sizeBytes;
 }
 
 
@@ -339,7 +415,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     // TODO Do we wanna initially fill the window from the top down or the bottom up?
     //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
         //absStartLineIdx = 0;
-    relStartLineIdx := absStartLineIdx & SourceBuffer.LINES_MASK;
+    relStartLineIdx := absStartLineIdx & SourceBuffer.LinesMask;
     line := *sourceBuffer.lines[ relStartLineIdx ];
 
     dst := renderer.cells.data;
@@ -467,11 +543,11 @@ Init :: ( buffer: *SourceBuffer )
     base: *void;
     // Ensure we can call this on already initialised data
     free( buffer.bytes.data );
-    buffer.bytes, base = NewArray( SourceBuffer.MAX_SIZE, u8 );
+    buffer.bytes, base = NewArray( SourceBuffer.MaxSize, u8 );
     assert( base == buffer.bytes.data );
 
     free( buffer.lines.data );
-    buffer.lines, base = NewArray( SourceBuffer.MAX_LINES, Line );
+    buffer.lines, base = NewArray( SourceBuffer.MaxLines, Line );
     assert( base == buffer.lines.data );
 }
 
@@ -490,7 +566,7 @@ GetFirstScreenLineAbsIndex :: ( absLineIdx: s64, lineOffset: s64, rendererRowCou
 
 GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 {
-    relPos := (line.absStartPos + col) & SourceBuffer.SIZE_MASK;
+    relPos := (line.absStartPos + col) & SourceBuffer.SizeMask;
     return buffer.bytes[ relPos ];
 }
 
@@ -512,12 +588,12 @@ GetLineBufferCharAt :: ( line: Line, col: int ) -> u8
                 if col > Separator
                 return #char " ";
 
-                value := line.absStartPos & SourceBuffer.SIZE_MASK;
+                value := line.absStartPos & SourceBuffer.SizeMask;
                 // value := line.absStartPos;
                 if col > MaxDigits
                 {
                     col -= (MaxDigits + 1);
-                    value = line.absOnePastEndPos & SourceBuffer.SIZE_MASK;
+                    value = line.absOnePastEndPos & SourceBuffer.SizeMask;
                     // value = line.absOnePastEndPos;
                 }
                 digit := MaxDigits - col;
