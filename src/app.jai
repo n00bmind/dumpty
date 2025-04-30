@@ -174,25 +174,16 @@ GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [
     return .{ count, buffer.bytes.data + relPos };
 }
 
-CommitWrite :: ( buffer: *SourceBuffer, count: s64 ) -> bool
+CommitWrite :: ( buffer: *SourceBuffer, count: s64 )
 {
     relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
     maxAvailableCount := buffer.bytes.count - relPos;
 
-    if( count <= maxAvailableCount )
-    {
-        buffer.absoluteHeadPos += count;
-        if buffer.absoluteHeadPos >= buffer.bytes.count
-            buffer.bytesFilled = true;
+    assert( count <= maxAvailableCount && "Trying to commit data that doesnt fit in the available range" );
 
-        return true;
-    }
-    else
-    {
-        // This should never be happening, so assert even if we're handling it
-        assert( false && "Trying to commit data that doesnt fit in the available range" );
-        return false;
-    }
+    buffer.absoluteHeadPos += count;
+    if buffer.absoluteHeadPos >= buffer.bytes.count
+        buffer.bytesFilled = true;
 }
 
 AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
@@ -206,20 +197,22 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
     if( data.count < available )
     {
         memcpy( buffer.bytes.data + relPos, data.data, data.count );
+        ParseLines( buffer, buffer.absoluteHeadPos, data.count );
     }
     else
     {
         memcpy( buffer.bytes.data + relPos, data.data, available );
         memcpy( buffer.bytes.data, data.data + available, data.count - available );
+
+        ParseLines( buffer, buffer.absoluteHeadPos, available );
+        ParseLines( buffer, buffer.absoluteHeadPos + available, data.count - available );
     }
-    ParseLines( buffer, buffer.absoluteHeadPos, data.count );
 
     buffer.absoluteHeadPos += data.count;
     if buffer.absoluteHeadPos >= buffer.bytes.count
         buffer.bytesFilled = true;
 }
 
-// TODO Test all this absolute-relative line positions malarkey again
 ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
     line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
@@ -228,7 +221,6 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
     {
         srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SizeMask ];
 
-        // FIXME We obvs want to do this faster, at least 16 chars at a time
         for absStartPos .. absStartPos + sizeBytes - 1
         {
             if <<srcChar == #char "\n"
@@ -256,6 +248,9 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
     }
     else
     {
+        relStartPos := absStartPos & SourceBuffer.SizeMask;
+        assert( relStartPos + sizeBytes <= buffer.bytes.count );
+
         nl := u8.[ 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa ];
         nlData := nl.data;
         #asm
@@ -265,28 +260,25 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
             // pshufb carriage, zero;
         }
 
-        parsed: s64 = 0;
-        remaining := sizeBytes - parsed;
+        src := *buffer.bytes[ relStartPos ];
+        remaining := sizeBytes;
+
         while remaining > 0
         {
-            relP := (absStartPos + parsed) & SourceBuffer.SizeMask;
-            src := *buffer.bytes[ relP ];
-
-            bufferRemaining := Min( buffer.bytes.count - relP, remaining );
-            while bufferRemaining >= 16
+            while remaining >= 16
             {
-                found := false;
+                setBits: u32 = 0;
                 #asm
                 {
                     movdqu batch:, [src];
-                    movdqu testC:, batch;
-                    pcmpeqb testC, carriage;
+                    movdqu testNL:, batch;
+                    pcmpeqb testNL, carriage;
 
-                    pmovmskb test:, testC;
-                    mov.8 [*found], test;
+                    pmovmskb test:, testNL;
+                    mov [*setBits], test;
                 }
 
-                if found
+                if setBits
                 {
                     advance := 0;
                     #asm
@@ -294,33 +286,35 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                         tzcnt advance, test;
                     }
                     src += advance;
-                    parsed += advance;
                     remaining -= advance;
                     break;
                 }
 
                 src += 16;
-                parsed += 16;
                 remaining -= 16;
             }
 
-            p := absStartPos + parsed;
-            assert( buffer.bytes[p] == #char "\n" );
+            absP := absStartPos + sizeBytes - remaining;
+            if remaining > 0 && src.* == #char "\n"
+            {
+                // Complete currently open line
+                line.absOnePastEndPos = absP + 1;
 
-            // Complete currently open line
-            line.absOnePastEndPos = p + 1;
-
-            line += 1;
-            if line >= buffer.lines.data + buffer.lines.count
+                line += 1;
+                if line >= buffer.lines.data + buffer.lines.count
                 line = buffer.lines.data;
 
-            // Start a new, initially empty line
-            line.absStartPos = p + 1;
-            line.absOnePastEndPos = p + 1;
+                // Start a new, initially empty line
+                line.absStartPos = absP + 1;
+                line.absOnePastEndPos = absP + 1;
 
-            buffer.absoluteLineIdx += 1;
-            if buffer.absoluteLineIdx >= buffer.lines.count
+                buffer.absoluteLineIdx += 1;
+                if buffer.absoluteLineIdx >= buffer.lines.count
                 buffer.linesFilled = true;
+            }
+
+            src += 1;
+            remaining -= 1;
         }
 
         // Ensure the last line runs up to the end of the range for now
