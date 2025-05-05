@@ -564,6 +564,9 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     cursor: CursorState;
     ClearCursor( *cursor );
 
+    // TODO Debug draw line info
+    // FIXME When any lines wrap in here, the command line goes outside the screen bounds !?
+    // Refterm does handle this fine though!
     for l: 0 .. lineCount - 1
     {
         lineIdx := (absStartLineIdx + l) & SourceBuffer.LinesMask;
@@ -573,35 +576,47 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         // This is because we're merely displaying a small window of content, and the last cursor properties could have been
         // set many many lines back
         cursor.props = line.startingProps;
-        ComputeLineGlyphs( line, *cursor, face, sourceBuffer, renderer );
+        range := GetLineRange( line, sourceBuffer );
+
+        ComputeRenderedGlyphs( range, *cursor, face, renderer );
+    }
+
+    ComputeRenderedGlyphs( commandLine.input, *cursor, face, renderer );
+
+    // TODO Actual moveable cursor
+    cell := GetCellAt( cursor, renderer );
+    if cell
+    {
+        glyph := *face.glyphs[127 - 32];
+        cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+        cell.props = cursor.props;
+        cell.props.flags |= xx GlyphProps.Blinking;
     }
 }
 
-ComputeLineGlyphs :: ( line: Line, cursor: *CursorState, face: *LoadedFace, sourceBuffer: SourceBuffer, renderer: *RendererState )
+ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *LoadedFace, renderer: *RendererState )
 {
-    range := GetLineRange( line, sourceBuffer );
-
-    while range.count > 0
+    while sourceRange.count > 0
     {
-        c0 := PeekToken( range, 0 );
+        c0 := PeekToken( sourceRange, 0 );
 
         if c0 == #char "\r"
         {
-            ConsumeCount( *range, 1 );
+            ConsumeCount( *sourceRange, 1 );
             cursor.x = 0;
         }
         else if c0 == #char "\n"
         {
-            ConsumeCount( *range, 1 );
+            ConsumeCount( *sourceRange, 1 );
             AdvanceRow( cursor );
         }
         // TODO Unicode
         else
         {
-            escape, cursorJumped := TryParseEscapeCode( *range, cursor );
+            escape, cursorJumped := TryParseEscapeCode( *sourceRange, cursor );
             if !escape
             {
-                codepoint := ConsumeToken( *range );
+                codepoint := ConsumeToken( *sourceRange );
 
                 cell := GetCellAt( cursor.*, renderer );
                 if cell
@@ -655,6 +670,8 @@ Init :: ( buffer: *SourceBuffer )
     assert( base == buffer.lines.data );
 
     ClearCursor( *buffer.runningCursor );
+    // Given how lines are currently parsed, the first line never gets the correct initial glyph props set, so set them here
+    buffer.lines[0].startingProps = buffer.runningCursor.props;
 }
 
 GetLineLength :: ( line: Line ) -> s64
