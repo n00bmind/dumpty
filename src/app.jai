@@ -128,7 +128,14 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     blink := (nowMs / BlinkTimeMillis) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
-    UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
+    #if false
+    {
+        UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
+    }
+    else
+    {
+        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, commandLine.*, memory.loadedFace, renderer );
+    }
 }
 
 #program_export
@@ -160,6 +167,9 @@ SourceBuffer :: struct
     absoluteLineIdx: s64;
     bytesFilled: bool;
     linesFilled: bool;
+
+    // Used purely to keep track of the glyph props at the start of every line as new escape codes are ingested
+    runningCursor: CursorState;
 }
 #assert( IsPowerOfTwo( SourceBuffer.MaxSize ) );
 #assert( IsPowerOfTwo( SourceBuffer.MaxLines ) );
@@ -213,6 +223,8 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
         buffer.bytesFilled = true;
 }
 
+// TODO Split lines after a max (4096 or whatever)
+// Test with a binary file or something that just contains a repeated byte..
 ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
     line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
@@ -233,6 +245,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                 // Start a new, initially empty line
                 line.absStartPos = it + 1;
                 line.absOnePastEndPos = it + 1;
+                line.startingProps = buffer.runningCursor.props;
 
                 buffer.absoluteLineIdx += 1;
                 if buffer.absoluteLineIdx >= buffer.lines.count
@@ -307,6 +320,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                 // Start a new, initially empty line
                 line.absStartPos = absP + 1;
                 line.absOnePastEndPos = absP + 1;
+                line.startingProps = buffer.runningCursor.props;
 
                 buffer.absoluteLineIdx += 1;
                 if buffer.absoluteLineIdx >= buffer.lines.count
@@ -337,6 +351,12 @@ AppState :: struct
     lastInputSeconds: float64;
 }
 
+CursorState :: struct
+{
+    x, y: s32;
+    props: GlyphProps;
+}
+
 Reset :: ( process: *Process )
 {
     deinit( process );
@@ -361,6 +381,13 @@ IsRunning :: ( process: Process ) -> bool
 #load "util.jai";
 #load "shell_cmd.jai";
 
+
+Line :: struct
+{
+    absStartPos: s64;
+    absOnePastEndPos: s64;
+    startingProps: GlyphProps;
+}
 
 CommandLine :: struct
 {
@@ -421,9 +448,9 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
         {
             defer dst += 1;
 
-            dst.foregroundColor = fg;
-            dst.backgroundColor = bg;
-            dst.flags = 0;
+            dst.props.foregroundColor = fg;
+            dst.props.backgroundColor = bg;
+            dst.props.flags = 0;
 
             col := x;
 
@@ -433,7 +460,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                 {
                     char := GetLineBufferCharAt( <<line, col );
                     dst.glyphIndex = GlyphIndexForChar( char, face );
-                    dst.foregroundColor = PackColor( .{ 0.5, 0.5, 0.5 } );
+                    dst.props.foregroundColor = PackColor( .{ 0.5, 0.5, 0.5 } );
                     continue;
                 }
 
@@ -460,7 +487,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                     {
                         glyph := *face.glyphs[127 - 32];
                         dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
-                        dst.flags |= xx RendererCell.Blinking;
+                        dst.props.flags |= xx GlyphProps.Blinking;
                         continue;
                     }
                 }
@@ -486,19 +513,19 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     {
         for col: 0..renderer.cellCount.x - 1
         {
-            dst.foregroundColor = fg;
-            dst.backgroundColor = bg;
-            dst.flags = 0;
+            dst.props.foregroundColor = fg;
+            dst.props.backgroundColor = bg;
+            dst.props.flags = 0;
 
             glyph: *Glyph;
             if col == 0
                 glyph = *face.glyphs[ #char ">" - 32 ];
             else if col == 1
-            glyph = *face.glyphs[ #char " " - 32 ];
+                glyph = *face.glyphs[ #char " " - 32 ];
             else if col == command.count + 2
             {
                 glyph = *face.glyphs[127 - 32];
-                dst.flags |= xx RendererCell.Blinking;
+                dst.props.flags |= xx GlyphProps.Blinking;
             }
             else if col > command.count + 2
             {
@@ -524,13 +551,96 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     }
 }
 
-
-Line :: struct
+LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine, face: *LoadedFace,
+                        renderer: *RendererState )
 {
-    absStartPos: s64;
-    absOnePastEndPos: s64;
-    flags: u32;
+    ClearScreenBuffer( renderer );
+
+    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
+    // TODO Refterm does many more lines per pass here, I assume to try to account for arbitrary cursor jumps etc
+    // but I'm unsure that's really necessary?
+    lineCount := renderer.cellCount.y;
+
+    cursor: CursorState;
+    ClearCursor( *cursor );
+
+    for l: 0 .. lineCount - 1
+    {
+        lineIdx := (absStartLineIdx + l) & SourceBuffer.LinesMask;
+        line := *sourceBuffer.lines[ lineIdx ];
+
+        // We need the cursor properties with which the line started to give an initial sensible value to our cursor
+        // This is because we're merely displaying a small window of content, and the last cursor properties could have been
+        // set many many lines back
+        cursor.props = line.startingProps;
+        ComputeLineGlyphs( line, *cursor, face, sourceBuffer, renderer );
+    }
 }
+
+ComputeLineGlyphs :: ( line: Line, cursor: *CursorState, face: *LoadedFace, sourceBuffer: SourceBuffer, renderer: *RendererState )
+{
+    range := GetLineRange( line, sourceBuffer );
+
+    while range.count > 0
+    {
+        c0 := PeekToken( range, 0 );
+
+        if c0 == #char "\r"
+        {
+            ConsumeCount( *range, 1 );
+            cursor.x = 0;
+        }
+        else if c0 == #char "\n"
+        {
+            ConsumeCount( *range, 1 );
+            AdvanceRow( cursor );
+        }
+        // TODO Unicode
+        else
+        {
+            escape, cursorJumped := TryParseEscapeCode( *range, cursor );
+            if !escape
+            {
+                codepoint := ConsumeToken( *range );
+
+                cell := GetCellAt( cursor.*, renderer );
+                if cell
+                {
+                    glyph: *Glyph;
+                    if codepoint >= 32 && codepoint < 127
+                    {
+                        glyph = *face.glyphs[ codepoint - 32 ];
+                    }
+                    else
+                    {
+                        // TODO Unicode
+                        glyph = *face.glyphs[127 - 32];
+                    }
+
+                    cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                    cell.props.foregroundColor = cursor.props.foregroundColor;
+                    cell.props.backgroundColor = cursor.props.backgroundColor;
+                    cell.props.flags = cursor.props.flags;
+                }
+
+                AdvanceColumn( cursor, lineWrap = true, renderer.cellCount.x );
+            }
+        }
+    }
+}
+
+TryParseEscapeCode :: ( range: *[] u8, cursor: *CursorState ) -> success: bool, movedCursor: bool
+{
+    // TODO Some sequences dont start with '['
+    if PeekToken( range.*, 0 ) != #char "\x1b" || PeekToken( range.*, 1 ) != #char "["
+        return false, false;
+
+    // ConsumeCount( range, 2 );
+    // TODO 
+
+    return true, true;
+}
+
 
 Init :: ( buffer: *SourceBuffer )
 {
@@ -543,6 +653,8 @@ Init :: ( buffer: *SourceBuffer )
     free( buffer.lines.data );
     buffer.lines, base = NewArray( SourceBuffer.MaxLines, Line );
     assert( base == buffer.lines.data );
+
+    ClearCursor( *buffer.runningCursor );
 }
 
 GetLineLength :: ( line: Line ) -> s64
@@ -553,10 +665,18 @@ GetLineLength :: ( line: Line ) -> s64
     return result;
 }
 
+GetLineRange :: ( line: Line, buffer: SourceBuffer ) -> [] u8
+{
+    assert( line.absOnePastEndPos >= line.absStartPos );
+    result: [] u8 = .{ line.absOnePastEndPos - line.absStartPos, *buffer.bytes[ line.absStartPos & SourceBuffer.SizeMask ] };
+    return result;
+}
+
 GetFirstScreenLineAbsIndex :: ( absLineIdx: s64, lineOffset: s64, rendererRowCount: s64 ) -> s64
 {
     return absLineIdx - lineOffset - rendererRowCount + 1;
 }
+
 
 GetCharAt :: ( buffer: SourceBuffer, line: Line, col: int ) -> u8
 {
@@ -617,6 +737,88 @@ GlyphIndexForChar :: ( char: u8, face: *LoadedFace ) -> u32
         // FIXME Also, use the first 32 slots as reserved, but still we can't directly index them like this!
         result = 127;
     }
+    return result;
+}
+
+PeekToken :: ( range: [] u8, offset: s64 ) -> u8
+{
+    result: u8;
+    if offset < range.count
+        result = range[offset];
+
+    return result;
+}
+
+ConsumeToken :: ( range: *[] u8 ) -> u8
+{
+    result: u8;
+    
+    if range.count > 0
+    {
+        result = range.*[0];
+        ConsumeCount( range, 1 );
+    }
+    return result;
+}
+
+ConsumeCount :: ( range: *[] u8, count: s64 )
+{
+    if count > range.count
+        count = range.count;
+
+    range.data += count;
+    range.count -= count;
+}
+
+
+ClearCursor :: ( cursor: *CursorState )
+{
+    cursor.x = 0;
+    cursor.y = 0;
+    ClearProps( *cursor.props );
+}
+
+AdvanceRow :: ( cursor: *CursorState )
+{
+    cursor.x = 0;
+    cursor.y += 1;
+}
+
+AdvanceColumn :: ( cursor: *CursorState, lineWrap: bool, xDim: s32 )
+{
+    cursor.x += 1;
+    if lineWrap && cursor.x >= xDim
+        AdvanceRow( cursor );
+}
+
+ClearProps :: ( props: *GlyphProps )
+{
+    // TODO Color schemes etc
+    props.foregroundColor = PackColor( .{ 1, 1, 1 } );
+    props.backgroundColor = PackColor( .{ 0.15, 0.15, 0.2 } );
+    props.flags = 0;
+}
+
+ClearScreenBuffer :: ( renderer: *RendererState )
+{
+    // TODO Color schemes etc
+    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+
+    for * c : renderer.cells
+    {
+        c.glyphIndex = 0;
+        c.props.foregroundColor = bg;
+        c.props.backgroundColor = bg;
+        c.props.flags = 0;
+    }
+}
+
+GetCellAt :: ( cursor: CursorState, renderer: *RendererState ) -> *RendererCell
+{
+    result: *RendererCell = null;
+    if cursor.x >= 0 && cursor.y >= 0 && cursor.x < renderer.cellCount.x && cursor.y < renderer.cellCount.y
+        result = *renderer.cells[ cursor.y * renderer.cellCount.x + cursor.x ];
+
     return result;
 }
 

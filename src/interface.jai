@@ -19,16 +19,8 @@ AppMemory :: struct
 
 RendererCell :: struct
 {
-    using enum_flags u32
-    {
-        Blinking;
-    }
-
-    glyphIndex : u32;
-    // NOTE Since we likely won't use the alpha on these, we could pack some flags in there
-    foregroundColor : u32;
-    backgroundColor : u32;
-    flags : u32;
+    glyphIndex: u32;
+    props: GlyphProps;
 }
 
 RendererState :: struct
@@ -55,6 +47,18 @@ Glyph :: struct
     offset:  v2s;
     size:    v2s;
     bearing: v2s;
+}
+
+GlyphProps :: struct
+{
+    using enum_flags u32
+    {
+        Blinking;
+    }
+
+    foregroundColor : u32;
+    backgroundColor : u32;
+    flags : u32;
 }
 
 LoadedFace :: struct

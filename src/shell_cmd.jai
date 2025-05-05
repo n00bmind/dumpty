@@ -4,6 +4,9 @@ ShellState :: struct
 }
 
 
+// TODO Investigate using Job Objects on windows (https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+// so that any child processes we crate here are auto assigned to the same job object
+// Investigate whether that would cause any child processes to be killed when the parent process dies for whatever reason
 StartShell :: ( process: *Process ) -> bool
 {
     // TODO Do we need to cache / process this?
