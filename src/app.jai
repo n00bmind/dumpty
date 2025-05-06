@@ -565,8 +565,6 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     ClearCursor( *cursor );
 
     // TODO Debug draw line info
-    // FIXME When any lines wrap in here, the command line goes outside the screen bounds !?
-    // Refterm does handle this fine though!
     for l: 0 .. lineCount - 1
     {
         lineIdx := (absStartLineIdx + l) & SourceBuffer.LinesMask;
@@ -592,6 +590,10 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         cell.props = cursor.props;
         cell.props.flags |= xx GlyphProps.Blinking;
     }
+
+    AdvanceRow( *cursor, renderer.cellCount );
+    // Track where we should start when mapping cells
+    renderer.firstRowY = cursor.y;
 }
 
 ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *LoadedFace, renderer: *RendererState )
@@ -608,7 +610,7 @@ ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *Load
         else if c0 == #char "\n"
         {
             ConsumeCount( *sourceRange, 1 );
-            AdvanceRow( cursor );
+            AdvanceRowAndClear( cursor, renderer );
         }
         // TODO Unicode
         else
@@ -638,7 +640,7 @@ ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *Load
                     cell.props.flags = cursor.props.flags;
                 }
 
-                AdvanceColumn( cursor, lineWrap = true, renderer.cellCount.x );
+                AdvanceColumn( cursor, lineWrap = true, renderer );
             }
         }
     }
@@ -795,17 +797,27 @@ ClearCursor :: ( cursor: *CursorState )
     ClearProps( *cursor.props );
 }
 
-AdvanceRow :: ( cursor: *CursorState )
+AdvanceRow :: ( cursor: *CursorState, screenBounds: v2s )
 {
     cursor.x = 0;
     cursor.y += 1;
+    // Allow the cursor to wrap around the bottom of the screen, then offset the rows back when GPU mapping the cell buffer
+    // Makes dealing with horizontal line wrapping trivial
+    if cursor.y >= screenBounds.y
+        cursor.y = 0;
 }
 
-AdvanceColumn :: ( cursor: *CursorState, lineWrap: bool, xDim: s32 )
+AdvanceRowAndClear :: ( cursor: *CursorState, renderer: *RendererState )
+{
+    AdvanceRow( cursor, renderer.cellCount );
+    ClearLine( cursor.y, renderer );
+}
+
+AdvanceColumn :: ( cursor: *CursorState, lineWrap: bool, renderer: *RendererState )
 {
     cursor.x += 1;
-    if lineWrap && cursor.x >= xDim
-        AdvanceRow( cursor );
+    if lineWrap && cursor.x >= renderer.cellCount.x
+        AdvanceRowAndClear( cursor, renderer );
 }
 
 ClearProps :: ( props: *GlyphProps )
@@ -816,18 +828,28 @@ ClearProps :: ( props: *GlyphProps )
     props.flags = 0;
 }
 
-ClearScreenBuffer :: ( renderer: *RendererState )
+ClearCells :: ( cells : [] RendererCell )
 {
     // TODO Color schemes etc
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
-
-    for * c : renderer.cells
+    for * c : cells
     {
         c.glyphIndex = 0;
         c.props.foregroundColor = bg;
         c.props.backgroundColor = bg;
         c.props.flags = 0;
     }
+}
+
+ClearLine :: ( y: s32, renderer: *RendererState )
+{
+    range: [] RendererCell = .{ renderer.cellCount.x, *renderer.cells[ y * renderer.cellCount.x ] };
+    ClearCells( range );
+}
+
+ClearScreenBuffer :: ( renderer: *RendererState )
+{
+    ClearCells( renderer.cells );
 }
 
 GetCellAt :: ( cursor: CursorState, renderer: *RendererState ) -> *RendererCell

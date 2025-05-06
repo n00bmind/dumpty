@@ -38,6 +38,7 @@ RendererState :: struct
         blinkModulateColor: u32;
     }
     using constants : Constants;
+    firstRowY: s32;
 }
 
 

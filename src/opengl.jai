@@ -294,16 +294,23 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
     glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.constantsBufferHandle );
     glBufferSubData( GL_UNIFORM_BUFFER, 0, size_of(RendererState.Constants), *renderer.constants );
 
+    topCellsCount := (renderer.cellCount.y - renderer.firstRowY) * renderer.cellCount.x;
+    botCellsCount := renderer.firstRowY * renderer.cellCount.x;
+    assert( topCellsCount + botCellsCount == renderer.cellCount.x * renderer.cellCount.y );
+    topCellsSize := topCellsCount * size_of(RendererCell);
+    botCellsSize := botCellsCount * size_of(RendererCell);
     #if USE_TEXTURE_BUFFER
     {
         glBindBuffer( GL_TEXTURE_BUFFER, state.gridShader.cellsBufferHandle );
         // This was faster than mapping the buffer & memcpying in the tests
-        glBufferSubData( GL_TEXTURE_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
+        glBufferSubData( GL_TEXTURE_BUFFER, 0, topCellsSize, renderer.cells.data + botCellsCount );
+        glBufferSubData( GL_TEXTURE_BUFFER, topCellsSize, botCellsSize, renderer.cells.data );
     }
     else
     {
         glBindBuffer( GL_UNIFORM_BUFFER, state.gridShader.cellsBufferHandle );
-        glBufferSubData( GL_UNIFORM_BUFFER, 0, renderer.cells.count * size_of(RendererCell), renderer.cells.data );
+        glBufferSubData( GL_UNIFORM_BUFFER, 0, topCellsSize, renderer.cells.data + botCellsCount );
+        glBufferSubData( GL_UNIFORM_BUFFER, topCellsSize, botCellsSize, renderer.cells.data );
     }
 
     glDrawArrays( GL_TRIANGLE_STRIP, 0, 4 );
