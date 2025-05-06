@@ -227,11 +227,10 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
 // Test with a binary file or something that just contains a repeated byte..
 ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
-
     #if false
     {
         srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SizeMask ];
+        line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
 
         for absStartPos .. absStartPos + sizeBytes - 1
         {
@@ -264,31 +263,38 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         relStartPos := absStartPos & SourceBuffer.SizeMask;
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
+        range: [] u8 = .{ sizeBytes, *buffer.bytes[ relStartPos ] };
+
         nl := u8.[ 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa ];
+        esc := u8.[ 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b ];
         nlData := nl.data;
+        escData := esc.data;
         #asm
         {
             // pxor zero: vec, zero;
             movdqu carriage: vec, [nlData];
+            movdqu escape: vec, [escData];
             // pshufb carriage, zero;
         }
 
-        src := *buffer.bytes[ relStartPos ];
-        remaining := sizeBytes;
-
-        while remaining > 0
+        while range.count > 0
         {
-            while remaining >= 16
+            while range.count >= 16
             {
                 setBits: u32 = 0;
+                src := range.data;
                 #asm
                 {
                     movdqu batch:, [src];
                     movdqu testNL:, batch;
                     pcmpeqb testNL, carriage;
+                    movdqu testEsc:, batch;
+                    pcmpeqb testEsc, escape;
 
-                    pmovmskb test:, testNL;
-                    mov [*setBits], test;
+                    movdqu test:, testNL;
+                    por test, testEsc;
+                    pmovmskb testBits:, test;
+                    mov [*setBits], testBits;
                 }
 
                 if setBits
@@ -296,44 +302,57 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                     advance := 0;
                     #asm
                     {
-                        tzcnt advance, test;
+                        tzcnt advance, testBits;
                     }
-                    src += advance;
-                    remaining -= advance;
+                    ConsumeCount( *range, advance );
                     break;
                 }
 
-                src += 16;
-                remaining -= 16;
+                ConsumeCount( *range, 16 );
             }
 
-            absP := absStartPos + sizeBytes - remaining;
-            if remaining > 0 && src.* == #char "\n"
+            if range.count > 0
             {
-                // Complete currently open line
-                line.absOnePastEndPos = absP + 1;
+                absP := absStartPos + sizeBytes - range.count;
 
-                line += 1;
-                if line >= buffer.lines.data + buffer.lines.count
-                line = buffer.lines.data;
-
-                // Start a new, initially empty line
-                line.absStartPos = absP + 1;
-                line.absOnePastEndPos = absP + 1;
-                line.startingProps = buffer.runningCursor.props;
-
-                buffer.absoluteLineIdx += 1;
-                if buffer.absoluteLineIdx >= buffer.lines.count
-                buffer.linesFilled = true;
+                escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor );
+                if escape
+                {
+                    if cursorJumped
+                        NewLine( absP, buffer.runningCursor.props, buffer );
+                }
+                else
+                {
+                    token := ConsumeToken( *range );
+                    if token == #char "\n"
+                    {
+                        NewLine( absP + 1, buffer.runningCursor.props, buffer );
+                    }
+                }
             }
-
-            src += 1;
-            remaining -= 1;
         }
 
         // Ensure the last line runs up to the end of the range for now
+        line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
         line.absOnePastEndPos = absStartPos + sizeBytes;
     }
+}
+
+NewLine :: ( absP: s64, curProps: GlyphProps, buffer: *SourceBuffer )
+{
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    // Complete currently open line
+    line.absOnePastEndPos = absP;
+
+    buffer.absoluteLineIdx += 1;
+    if buffer.absoluteLineIdx >= buffer.lines.count
+        buffer.linesFilled = true;
+
+    line = *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    // Start a new, initially empty line
+    line.absStartPos = absP;
+    line.absOnePastEndPos = absP;
+    line.startingProps = curProps;
 }
 
 
@@ -487,7 +506,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                     {
                         glyph := *face.glyphs[127 - 32];
                         dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
-                        dst.props.flags |= xx GlyphProps.Blinking;
+                        dst.props.flags |= .Blinking;
                         continue;
                     }
                 }
@@ -525,7 +544,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
             else if col == command.count + 2
             {
                 glyph = *face.glyphs[127 - 32];
-                dst.props.flags |= xx GlyphProps.Blinking;
+                dst.props.flags |= .Blinking;
             }
             else if col > command.count + 2
             {
@@ -579,6 +598,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         ComputeRenderedGlyphs( range, *cursor, face, renderer );
     }
 
+    // Current commandline contents
     ComputeRenderedGlyphs( commandLine.input, *cursor, face, renderer );
 
     // TODO Actual moveable cursor
@@ -588,7 +608,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         glyph := *face.glyphs[127 - 32];
         cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
         cell.props = cursor.props;
-        cell.props.flags |= xx GlyphProps.Blinking;
+        cell.props.flags |= .Blinking;
     }
 
     AdvanceRow( *cursor, renderer.cellCount );
@@ -615,6 +635,9 @@ ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *Load
         // TODO Unicode
         else
         {
+            // TODO Refterm wants to reposition the prompt line when the cursor jumps here
+            // but our prompt is controlled by the shell, so I doubt we can do anything about that..
+            // TODO Do we need to enable VT code support through some Win32 crap to receive VT codes from Windows apps?
             escape, cursorJumped := TryParseEscapeCode( *sourceRange, cursor );
             if !escape
             {
@@ -652,10 +675,83 @@ TryParseEscapeCode :: ( range: *[] u8, cursor: *CursorState ) -> success: bool, 
     if PeekToken( range.*, 0 ) != #char "\x1b" || PeekToken( range.*, 1 ) != #char "["
         return false, false;
 
-    // ConsumeCount( range, 2 );
-    // TODO 
+    ConsumeCount( range, 2 );
 
-    return true, true;
+    command: u8;
+    params: [..] u64;
+    params.allocator = temp;
+
+    while range.count > 0
+    {
+        token := PeekToken( range.*, 0 );
+        if IsDigit( token )
+        {
+            array_add( *params, ParseUnsignedInt( range ) );
+            
+            if PeekToken( range.*, 0 ) == #char ";"
+                ConsumeCount( range, 1 );
+        }
+        else
+        {
+            command = ConsumeToken( range );
+            break;
+        }
+    }
+
+    movedCursor := false;
+    if command ==
+    {
+        case #char "H";
+        {
+            if params.count != 2
+                return false, false;
+
+            cursor.x = cast(s32) (params[1] - 1);
+            cursor.y = cast(s32) (params[0] - 1);
+            movedCursor = true;
+        }
+        case #char "m";
+        {
+            if params.count < 1
+                return false, false;
+
+            if params[0] ==
+            {
+                case 0; ClearProps( *cursor.props );
+
+                case 1; cursor.props.flags |= .Bold;
+                case 2; cursor.props.flags |= .Dim;
+                case 3; cursor.props.flags |= .Italic;
+                case 4; cursor.props.flags |= .Underline;
+                case 5; cursor.props.flags |= .Blinking;
+                case 7; cursor.props.flags |= .ReverseVideo;
+                case 8; cursor.props.flags |= .Invisible;
+                case 9; cursor.props.flags |= .Strikethrough;
+
+                case 38;
+                {
+                    if params[1] == 2
+                        cursor.props.foregroundColor = PackColor( xx params[2], xx params[3], xx params[4] );
+                    else
+                        return false, false;
+                }
+                case 39;
+                {
+                    if params[1] == 2
+                        cursor.props.backgroundColor = PackColor( xx params[2], xx params[3], xx params[4] );
+                    else
+                        return false, false;
+                }
+
+                case;
+                    return false, false;
+            }
+        }
+        case;
+            return false, false;
+    }
+
+    return true, movedCursor;
 }
 
 
@@ -787,6 +883,22 @@ ConsumeCount :: ( range: *[] u8, count: s64 )
 
     range.data += count;
     range.count -= count;
+}
+
+IsDigit :: ( char: u8 ) -> bool
+{
+    return char >= #char "0" && char <= #char "9";
+}
+
+ParseUnsignedInt :: ( range: *[] u8 ) -> u64
+{
+    result: u64 = 0;
+    while IsDigit( PeekToken( range.*, 0 ) )
+    {
+        token := ConsumeToken( range );
+        result = result * 10 + (token - #char "0");
+    }
+    return result;
 }
 
 

@@ -52,14 +52,21 @@ Glyph :: struct
 
 GlyphProps :: struct
 {
-    using enum_flags u32
+    Flags :: enum_flags u32
     {
         Blinking;
+        Bold;
+        Dim;
+        Italic;
+        Underline;
+        ReverseVideo;
+        Invisible;
+        Strikethrough;
     }
 
-    foregroundColor : u32;
-    backgroundColor : u32;
-    flags : u32;
+    foregroundColor: u32;
+    backgroundColor: u32;
+    flags: Flags;
 }
 
 LoadedFace :: struct

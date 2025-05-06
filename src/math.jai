@@ -52,6 +52,16 @@ PackColor :: ( color: v3 ) -> u32
     return result;
 }
 
+PackColor :: ( r: u32, g: u32, b: u32 ) -> u32
+{
+    r = ifx r > 255 then 255 else r;
+    g = ifx g > 255 then 255 else g;
+    b = ifx b > 255 then 255 else b;
+
+    result: u32 = (b << 16) | (g << 8) | (r);
+    return result;
+}
+
 // Round to nearest, following C's convention .. https://cplusplus.com/reference/cmath/round/
 Round :: ( x: float64 ) -> float64
 {
