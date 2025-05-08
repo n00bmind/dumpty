@@ -16,7 +16,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
 
     appState := cast(*AppState) memory.appState;
-    commandLine := *appState.commandLine;
+    cmdline := *appState.commandLine;
 
     for input.events
     {
@@ -45,27 +45,55 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     appState.lineOffset = Max( 0, appState.lineOffset );
                 }
 
+                case .ARROW_UP;
+                    // Ensure we dont ever underflow the array
+                    minHistoryIdx := ifx cmdline.history.nextEntryAbsIdx >= CommandLineHistory.MaxEntries
+                        then cmdline.history.nextEntryAbsIdx - CommandLineHistory.MaxEntries + 1
+                        else 0;
+                    if cmdline.history.displayedAbsIdx > minHistoryIdx
+                    {
+                        cmdline.history.displayedAbsIdx -= 1;
+                        RetrieveHistoryEntry( cmdline );
+                    }
+                case .ARROW_DOWN;
+                    if cmdline.history.displayedAbsIdx < cmdline.history.nextEntryAbsIdx
+                    {
+                        cmdline.history.displayedAbsIdx += 1;
+                        RetrieveHistoryEntry( cmdline );
+                    }
+
                 case .BACKSPACE;
-                // WriteToProcess( *appState.shellProcess, "\x08" );
-                if commandLine.input.count > 0
-                    pop( *commandLine.input );
+                    // WriteToProcess( *appState.shellProcess, "\x08" );
+                    if cmdline.input.count > 0
+                        pop( *cmdline.input );
 
                 case .ENTER;
-                if begins_with( xx commandLine.input, "#" )
                 {
-                    AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) commandLine.input ) );
-                    if !ExecuteBuiltinCommand( *appState.builtinProcess, commandLine.input, appState )
+                    if cmdline
+                    {
+                        UpdateHistoryEntry( cmdline );
+                        // TODO We should probably "collapse" (i.e. discard) the entered line
+                        // if the previous history entry was identical..
+                        CommitHistoryEntry( cmdline );
+                    }
+
+                    if begins_with( xx cmdline.input, "#" )
+                    {
+                        AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) cmdline.input ) );
+                        if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input, appState )
                         AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing builtin command\n" );
-                }
-                else
-                {
-                    // WriteToProcess( *appState.shellProcess, "\n" );
-                    //
-                    push( *commandLine.input, "\n" );
-                    if !ExecuteShellCommand( *appState.shellProcess, commandLine.input )
+                    }
+                    else
+                    {
+                        // WriteToProcess( *appState.shellProcess, "\n" );
+                        //
+                        push( *cmdline.input, "\n" );
+                        if !ExecuteShellCommand( *appState.shellProcess, cmdline.input )
                         AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
+                    }
+
+                    cmdline.input.count = 0;
                 }
-                commandLine.input.count = 0;
             }
 
             case .TEXT_INPUT;
@@ -75,9 +103,10 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 // TODO Temp mem!
                 str := character_utf32_to_utf8( value );
                 // WriteToProcess( *appState.shellProcess, str );
-                push( *commandLine.input, str );
+                push( *cmdline.input, str );
                 free( str );
                 
+                UpdateHistoryEntry( cmdline );
                 appState.lastInputSeconds = seconds_since_init();
             }
         }
@@ -130,11 +159,11 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
     #if false
     {
-        UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<commandLine );
+        UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<cmdline );
     }
     else
     {
-        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, commandLine.*, memory.loadedFace, renderer );
+        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, memory.loadedFace, renderer );
     }
 }
 
@@ -260,6 +289,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
     }
     else
     {
+        // TODO Check codegen for all this stuff
         relStartPos := absStartPos & SourceBuffer.SizeMask;
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
@@ -364,6 +394,8 @@ AppState :: struct
     lineOffset: s64;
 
     commandLine: CommandLine;
+    cursor: CursorState;
+
     shellProcess: Process;
     builtinProcess: Process;
 
@@ -411,8 +443,41 @@ Line :: struct
 CommandLine :: struct
 {
     input: [..] u8;
-    // TODO Cursor pos etc
+    history: CommandLineHistory;
 }
+
+CommandLineHistory :: struct
+{
+    MaxEntries :: 256;
+    EntriesMask :: MaxEntries - 1;
+    entries: [MaxEntries] [..] u8;
+
+    nextEntryAbsIdx: u32;
+    displayedAbsIdx: u32;  // If equal to nextEntry, no entry is displayed
+}
+
+UpdateHistoryEntry :: ( using commandLine: *CommandLine )
+{
+    array_copy( *history.entries[ history.nextEntryAbsIdx & history.EntriesMask ],
+                input );
+}
+
+// Resets displayed index to point to a new empty entry
+CommitHistoryEntry :: ( using commandLine: *CommandLine )
+{
+    history.nextEntryAbsIdx += 1;
+    history.displayedAbsIdx = history.nextEntryAbsIdx;
+
+    newEntry := *history.entries[ history.nextEntryAbsIdx & history.EntriesMask ];
+    newEntry.count = 0;
+}
+
+RetrieveHistoryEntry :: ( using cmdline: *CommandLine )
+{
+    src := *history.entries[ history.displayedAbsIdx & history.EntriesMask ];
+    array_copy( *input, src.* );
+}
+
 
 Init :: ( memory: *AppMemory ) -> *AppState
 {
@@ -448,7 +513,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
-    commandString := to_string( commandLine.input.data, commandLine.input.count );
+    commandString := commandLine.input;
 
     absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
@@ -583,6 +648,8 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     cursor: CursorState;
     ClearCursor( *cursor );
 
+    commandString := commandLine.input;
+
     // TODO Debug draw line info
     for l: 0 .. lineCount - 1
     {
@@ -599,7 +666,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     }
 
     // Current commandline contents
-    ComputeRenderedGlyphs( commandLine.input, *cursor, face, renderer );
+    ComputeRenderedGlyphs( commandString, *cursor, face, renderer );
 
     // TODO Actual moveable cursor
     cell := GetCellAt( cursor, renderer );

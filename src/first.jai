@@ -134,6 +134,8 @@ main :: ()
                         case .ENTER;
                         case .PAGE_UP;
                         case .PAGE_DOWN;
+                        case .ARROW_UP;
+                        case .ARROW_DOWN;
                         //
 
                         case;
