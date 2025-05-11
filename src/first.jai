@@ -87,6 +87,7 @@ main :: ()
             exit( 1 );
         }
 
+        // TODO Do something akin to https://github.com/cmuratori/dtc to allow normal redrawing while resizing etc.
         update_window_events();
 
         for get_window_resizes()

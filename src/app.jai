@@ -27,6 +27,10 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
             {
                 case .PAGE_UP;
                 {
+                    // TODO We should probably just add an offset in bytes based on the current screen size,
+                    // then let the layout function solve for the right line to start with
+                    // TODO i.e. this should scroll half a page of *VISUAL* lines
+                    // TODO Test with some good ol structured data
                     newOffset := appState.lineOffset;
                     newOffset += renderer.cellCount.y / 2;
                     newOffset = Min( newOffset, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
@@ -183,9 +187,17 @@ Shutdown :: ( memory: *AppMemory )
 
 SourceBuffer :: struct
 {
-    MaxSize :: 16 * 1024 * 1024;
-    SizeMask :: MaxSize - 1;
-    MaxLines :: 4096;
+    #if BUILD_CONFIG == .Debug
+    {
+        MaxSize :: 1024 * 1024;
+        MaxLines :: 1024;
+    }
+    else
+    {
+        MaxSize :: 16 * 1024 * 1024;
+        MaxLines :: 8192;
+    }
+    SizeMask  :: MaxSize - 1;
     LinesMask :: MaxLines - 1;
     
     bytes: [] u8;
@@ -258,6 +270,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
     #if false
     {
+        // TODO This block is now lagging behind in terms of features
         srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SizeMask ];
         line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
 
@@ -294,6 +307,9 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
         range: [] u8 = .{ sizeBytes, *buffer.bytes[ relStartPos ] };
+        // TODO Test this using a really small bound
+        // SplitLineAtCount :: SourceBuffer.MaxSize;
+        SplitLineAtCount :: 32;
 
         nl := u8.[ 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa ];
         esc := u8.[ 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b ];
@@ -301,21 +317,27 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         escData := esc.data;
         #asm
         {
-            // pxor zero: vec, zero;
             movdqu carriage: vec, [nlData];
             movdqu escape: vec, [escData];
-            // pshufb carriage, zero;
         }
 
         while range.count > 0
         {
-            while range.count >= 16
+            data := range.data;
+            count := range.count;
+            // Ensure lines cannot straddle across the entire buffer limits
+            // TODO There's an edge case here, where if a VT code straddles this artificial split, we should stop
+            // parsing right at the point where the code starts and restart parsing there on the next ParseLines call
+            // For that we'd need to introduce a 'parseHead' which we dont have rn..
+            if count > SplitLineAtCount
+                count = SplitLineAtCount;
+
+            while count >= 16
             {
                 setBits: u32 = 0;
-                src := range.data;
                 #asm
                 {
-                    movdqu batch:, [src];
+                    movdqu batch:, [data];
                     movdqu testNL:, batch;
                     pcmpeqb testNL, carriage;
                     movdqu testEsc:, batch;
@@ -334,13 +356,16 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                     {
                         tzcnt advance, testBits;
                     }
-                    ConsumeCount( *range, advance );
+                    data += advance;
+                    count -= advance;
                     break;
                 }
 
-                ConsumeCount( *range, 16 );
+                data += 16;
+                count -= 16;
             }
 
+            ConsumeCount( *range, data - range.data );
             if range.count > 0
             {
                 absP := absStartPos + sizeBytes - range.count;
@@ -349,42 +374,44 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                 if escape
                 {
                     if cursorJumped
-                        NewLine( absP, buffer.runningCursor.props, buffer );
+                        NewLine( absP, buffer );
                 }
                 else
                 {
                     token := ConsumeToken( *range );
                     if token == #char "\n"
                     {
-                        NewLine( absP + 1, buffer.runningCursor.props, buffer );
+                        NewLine( absP + 1, buffer );
                     }
                 }
+
             }
+            // If the current line has gotten too long, split it now
+            absP := absStartPos + sizeBytes - range.count;
+            if absP - GetCurLine( buffer ).absStartPos >= SplitLineAtCount
+                NewLine( absP, buffer );
         }
 
         // Ensure the last line runs up to the end of the range for now
-        line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
-        line.absOnePastEndPos = absStartPos + sizeBytes;
+        UpdateCurLineEnd( absStartPos + sizeBytes, buffer );
     }
 }
 
-NewLine :: ( absP: s64, curProps: GlyphProps, buffer: *SourceBuffer )
+NewLine :: ( absP: s64, buffer: *SourceBuffer )
 {
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
     // Complete currently open line
-    line.absOnePastEndPos = absP;
+    UpdateCurLineEnd( absP, buffer );
 
     buffer.absoluteLineIdx += 1;
     if buffer.absoluteLineIdx >= buffer.lines.count
         buffer.linesFilled = true;
 
-    line = *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
     // Start a new, initially empty line
     line.absStartPos = absP;
     line.absOnePastEndPos = absP;
-    line.startingProps = curProps;
+    line.startingProps = buffer.runningCursor.props;
 }
-
 
 AppState :: struct
 {
@@ -640,6 +667,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
 {
     ClearScreenBuffer( renderer );
 
+    // TODO Ensure the first line here starts *at or before* the first cell on the screen
     absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
     // TODO Refterm does many more lines per pass here, I assume to try to account for arbitrary cursor jumps etc
     // but I'm unsure that's really necessary?
@@ -660,7 +688,9 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         // This is because we're merely displaying a small window of content, and the last cursor properties could have been
         // set many many lines back
         cursor.props = line.startingProps;
-        range := GetLineRange( line, sourceBuffer );
+        // FIXME This range could very well straddle the end of the source buffer
+        // TODO Would be nice to have some sort of SourceBufferView that can wrap around automatically
+        range := GetLineAbsRange( line, sourceBuffer );
 
         ComputeRenderedGlyphs( range, *cursor, face, renderer );
     }
@@ -839,19 +869,32 @@ Init :: ( buffer: *SourceBuffer )
     buffer.lines[0].startingProps = buffer.runningCursor.props;
 }
 
+GetCurLine :: ( buffer: *SourceBuffer ) -> *Line
+{
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    return line;
+}
+
 GetLineLength :: ( line: Line ) -> s64
 {
-    // TODO Test lines that span back to expired buffer positions
-    // TODO What about lines that span the whole buffer?
     result := line.absOnePastEndPos - line.absStartPos;
     return result;
 }
 
-GetLineRange :: ( line: Line, buffer: SourceBuffer ) -> [] u8
+// FIXME This is used to then directly access the source buffer without modding in some places..
+// TODO This is not the best name?
+GetLineAbsRange :: ( line: Line, buffer: SourceBuffer ) -> [] u8
 {
     assert( line.absOnePastEndPos >= line.absStartPos );
     result: [] u8 = .{ line.absOnePastEndPos - line.absStartPos, *buffer.bytes[ line.absStartPos & SourceBuffer.SizeMask ] };
+    assert( result.count <= SourceBuffer.MaxSize );
     return result;
+}
+
+UpdateCurLineEnd :: ( absP: s64, buffer: *SourceBuffer )
+{
+    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    line.absOnePastEndPos = absP;
 }
 
 GetFirstScreenLineAbsIndex :: ( absLineIdx: s64, lineOffset: s64, rendererRowCount: s64 ) -> s64

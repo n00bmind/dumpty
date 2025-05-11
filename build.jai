@@ -4,6 +4,8 @@
 #import "String";
 #import "File";
 
+#load "src/interface.jai";
+
 build :: ()
 {
     set_build_options_dc( .{do_output=false} );  // No executable for this workspace.
@@ -16,6 +18,7 @@ build :: ()
     global_options.intermediate_path = "bin";
 
     build_release := false;
+    config := BuildConfig.Debug;
     args := global_options.compile_time_command_line;
 
     for arg: args
@@ -26,6 +29,7 @@ build :: ()
             case "-release"; #through;
             case "release";
                 build_release = true;
+                config = .Release;
                 print( "Building release version.\n" );
         }
     }
@@ -42,6 +46,8 @@ build :: ()
     }
 
 
+    configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
+
     // Application DLL
     {
         w := compiler_create_workspace();
@@ -52,6 +58,7 @@ build :: ()
         set_build_options( options, w );
 
         add_build_file( "src/app.jai", w );
+        add_build_string( configStr, w );
     }
 
     // Main executable
@@ -63,6 +70,7 @@ build :: ()
         set_build_options( options, w );
 
         add_build_file( "src/first.jai", w );
+        add_build_string( configStr, w );
     }
 
     // Test data

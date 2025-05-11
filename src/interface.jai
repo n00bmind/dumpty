@@ -3,6 +3,16 @@
 #load "math.jai";
 #load "memory.jai";
 
+
+BuildConfig :: enum
+{
+    Debug;
+    Dev;
+    Release;
+}
+#placeholder BUILD_CONFIG;
+
+
 AppInput :: struct
 {
     events: [..] Event;
