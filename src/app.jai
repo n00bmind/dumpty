@@ -368,6 +368,10 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
             {
                 absP := absStartPos + sizeBytes - range.count;
 
+                // TODO Dont we have a similar edge case here? Since the input that comes from the pipe can start wherever,
+                // we could start parsing in the middle of some VT code that affects the props, then split a new line right
+                // after, and we'll have failed to determine the correct glyphs props to start the line with!?
+                // TODO Prepare some kind of test case for this, seems like another argument for an independent 'parseHead'
                 escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor );
                 if escape
                 {
@@ -836,7 +840,7 @@ TryParseEscapeCode :: ( range: *$Range, cursor: *CursorState ) -> success: bool,
                     else
                         return false, false;
                 }
-                case 39;
+                case 48;
                 {
                     if params[1] == 2
                         cursor.props.backgroundColor = PackColor( xx params[2], xx params[3], xx params[4] );
