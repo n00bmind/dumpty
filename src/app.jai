@@ -264,8 +264,6 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
         buffer.bytesFilled = true;
 }
 
-// TODO Split lines after a max (4096 or whatever)
-// Test with a binary file or something that just contains a repeated byte..
 ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
 {
     #if false
@@ -307,9 +305,9 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
         range: [] u8 = .{ sizeBytes, *buffer.bytes[ relStartPos ] };
-        // TODO Test this using a really small bound
-        // SplitLineAtCount :: SourceBuffer.MaxSize;
-        SplitLineAtCount :: 32;
+        // TODO Test artificial line splitting a bit more (see below)
+        SplitLineAtCount :: 4096;
+        // SplitLineAtCount :: 32;
 
         nl := u8.[ 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa ];
         esc := u8.[ 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b, 0x1b ];
@@ -325,7 +323,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         {
             data := range.data;
             count := range.count;
-            // Ensure lines cannot straddle across the entire buffer limits
+            // Ensure really long lines dont case too many issues
             // TODO There's an edge case here, where if a VT code straddles this artificial split, we should stop
             // parsing right at the point where the code starts and restart parsing there on the next ParseLines call
             // For that we'd need to introduce a 'parseHead' which we dont have rn..
@@ -460,6 +458,13 @@ IsRunning :: ( process: Process ) -> bool
 #load "shell_cmd.jai";
 
 
+SourceBufferRange :: struct
+{
+    base: *u8;
+    absP: s64;
+    count: s64;
+}
+
 Line :: struct
 {
     absStartPos: s64;
@@ -508,7 +513,6 @@ RetrieveHistoryEntry :: ( using cmdline: *CommandLine )
 
 Init :: ( memory: *AppMemory ) -> *AppState
 {
-    // TODO Adjust this better
     // TODO Add support for commiting & decommiting as we go?
     appState := BootstrapStructWithArena( AppState, offsetof( AppState, "mainArena" ), Gigabytes( 1 ) );
     memory.appState = appState;
@@ -533,6 +537,7 @@ Init :: ( memory: *AppMemory ) -> *AppState
 DebugDrawLineBufferValues :: false;
 DebugLineValuesReservedCols :: 17;
 
+// TODO Delete
 UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine )
 {
     LineValuesColOffset :: #ifx DebugDrawLineBufferValues then DebugLineValuesReservedCols else 0;
@@ -688,9 +693,8 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         // This is because we're merely displaying a small window of content, and the last cursor properties could have been
         // set many many lines back
         cursor.props = line.startingProps;
-        // FIXME This range could very well straddle the end of the source buffer
-        // TODO Would be nice to have some sort of SourceBufferView that can wrap around automatically
-        range := GetLineAbsRange( line, sourceBuffer );
+        // TODO Test huge lines straddling the end of the source buffer
+        range := GetBufferRange( line, sourceBuffer );
 
         ComputeRenderedGlyphs( range, *cursor, face, renderer );
     }
@@ -713,20 +717,20 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     renderer.firstRowY = cursor.y;
 }
 
-ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *LoadedFace, renderer: *RendererState )
+ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFace, renderer: *RendererState )
 {
-    while sourceRange.count > 0
+    while range.count > 0
     {
-        c0 := PeekToken( sourceRange, 0 );
+        c0 := PeekToken( range, 0 );
 
         if c0 == #char "\r"
         {
-            ConsumeCount( *sourceRange, 1 );
+            ConsumeCount( *range, 1 );
             cursor.x = 0;
         }
         else if c0 == #char "\n"
         {
-            ConsumeCount( *sourceRange, 1 );
+            ConsumeCount( *range, 1 );
             AdvanceRowAndClear( cursor, renderer );
         }
         // TODO Unicode
@@ -735,10 +739,10 @@ ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *Load
             // TODO Refterm wants to reposition the prompt line when the cursor jumps here
             // but our prompt is controlled by the shell, so I doubt we can do anything about that..
             // TODO Do we need to enable VT code support through some Win32 crap to receive VT codes from Windows apps?
-            escape, cursorJumped := TryParseEscapeCode( *sourceRange, cursor );
+            escape, cursorJumped := TryParseEscapeCode( *range, cursor );
             if !escape
             {
-                codepoint := ConsumeToken( *sourceRange );
+                codepoint := ConsumeToken( *range );
 
                 cell := GetCellAt( cursor.*, renderer );
                 if cell
@@ -766,7 +770,7 @@ ComputeRenderedGlyphs :: ( sourceRange: [] u8, cursor: *CursorState, face: *Load
     }
 }
 
-TryParseEscapeCode :: ( range: *[] u8, cursor: *CursorState ) -> success: bool, movedCursor: bool
+TryParseEscapeCode :: ( range: *$Range, cursor: *CursorState ) -> success: bool, movedCursor: bool
 {
     // TODO Some sequences dont start with '['
     if PeekToken( range.*, 0 ) != #char "\x1b" || PeekToken( range.*, 1 ) != #char "["
@@ -881,13 +885,13 @@ GetLineLength :: ( line: Line ) -> s64
     return result;
 }
 
-// FIXME This is used to then directly access the source buffer without modding in some places..
-// TODO This is not the best name?
-GetLineAbsRange :: ( line: Line, buffer: SourceBuffer ) -> [] u8
+GetBufferRange :: ( line: Line, buffer: SourceBuffer ) -> SourceBufferRange
 {
     assert( line.absOnePastEndPos >= line.absStartPos );
-    result: [] u8 = .{ line.absOnePastEndPos - line.absStartPos, *buffer.bytes[ line.absStartPos & SourceBuffer.SizeMask ] };
-    assert( result.count <= SourceBuffer.MaxSize );
+    result: SourceBufferRange = ---;
+    result.base  = buffer.bytes.data;
+    result.absP  = line.absStartPos;
+    result.count = line.absOnePastEndPos - line.absStartPos;
     return result;
 }
 
@@ -974,6 +978,15 @@ PeekToken :: ( range: [] u8, offset: s64 ) -> u8
     return result;
 }
 
+PeekToken :: ( range: SourceBufferRange, offset: s64 ) -> u8
+{
+    result: u8;
+    if offset < range.count
+        result = range.base[ (range.absP + offset) & SourceBuffer.SizeMask ];
+
+    return result;
+}
+
 ConsumeToken :: ( range: *[] u8 ) -> u8
 {
     result: u8;
@@ -981,6 +994,18 @@ ConsumeToken :: ( range: *[] u8 ) -> u8
     if range.count > 0
     {
         result = range.*[0];
+        ConsumeCount( range, 1 );
+    }
+    return result;
+}
+
+ConsumeToken :: ( range: *SourceBufferRange ) -> u8
+{
+    result: u8;
+    
+    if range.count > 0
+    {
+        result = range.base[ range.absP & SourceBuffer.SizeMask ];
         ConsumeCount( range, 1 );
     }
     return result;
@@ -995,12 +1020,21 @@ ConsumeCount :: ( range: *[] u8, count: s64 )
     range.count -= count;
 }
 
+ConsumeCount :: ( range: *SourceBufferRange, count: s64 )
+{
+    if count > range.count
+        count = range.count;
+
+    range.absP += count;
+    range.count -= count;
+}
+
 IsDigit :: ( char: u8 ) -> bool
 {
     return char >= #char "0" && char <= #char "9";
 }
 
-ParseUnsignedInt :: ( range: *[] u8 ) -> u64
+ParseUnsignedInt :: ( range: *$Range ) -> u64
 {
     result: u64 = 0;
     while IsDigit( PeekToken( range.*, 0 ) )
