@@ -104,11 +104,11 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
             {
                 value := it.utf32;
 
-                // TODO Temp mem!
-                str := character_utf32_to_utf8( value );
+                // The theoretical maximum for UTF8 is 6 bytes
+                str := alloc_string( 6 ,, temp );
+                character_utf32_to_utf8( value, *str );
                 // WriteToProcess( *appState.shellProcess, str );
                 push( *cmdline.input, str );
-                free( str );
                 
                 UpdateHistoryEntry( cmdline );
                 appState.lastInputSeconds = seconds_since_init();
@@ -727,48 +727,63 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
     {
         c0 := PeekToken( range, 0 );
 
-        if c0 == #char "\r"
+        if c0 ==
         {
-            ConsumeCount( *range, 1 );
-            cursor.x = 0;
-        }
-        else if c0 == #char "\n"
-        {
-            ConsumeCount( *range, 1 );
-            AdvanceRowAndClear( cursor, renderer );
-        }
-        // TODO Unicode
-        else
-        {
-            // TODO Refterm wants to reposition the prompt line when the cursor jumps here
-            // but our prompt is controlled by the shell, so I doubt we can do anything about that..
-            // TODO Do we need to enable VT code support through some Win32 crap to receive VT codes from Windows apps?
-            escape, cursorJumped := TryParseEscapeCode( *range, cursor );
-            if !escape
+            case #char "\r";
             {
-                codepoint := ConsumeToken( *range );
-
-                cell := GetCellAt( cursor.*, renderer );
-                if cell
+                ConsumeCount( *range, 1 );
+                cursor.x = 0;
+            }
+            case #char "\n";
+            {
+                ConsumeCount( *range, 1 );
+                AdvanceRowAndClear( cursor, renderer );
+            }
+            case #char "\x08";  // Backspace
+            {
+                ConsumeCount( *range, 1 );
+                cursor.x -= 1;
+            }
+            case;
+            {
+                // TODO Refterm wants to reposition the prompt line when the cursor jumps here
+                // but our prompt is controlled by the shell, so I doubt we can do anything about that..
+                // TODO Do we need to enable VT code support through some Win32 crap to receive VT codes from Windows apps?
+                escape, cursorJumped := TryParseEscapeCode( *range, cursor );
+                if !escape
                 {
-                    glyph: *Glyph;
-                    if codepoint >= 32 && codepoint < 127
+                    cell := GetCellAt( cursor.*, renderer );
+                    if cell
                     {
-                        glyph = *face.glyphs[ codepoint - 32 ];
-                    }
-                    else
-                    {
-                        // TODO Unicode
-                        glyph = *face.glyphs[127 - 32];
+                        glyph: *Glyph;
+                        if c0 >= 32 && c0 < 127
+                        {
+                            glyph = *face.glyphs[ c0 - 32 ];
+                            ConsumeCount( *range, 1 );
+                        }
+                        else
+                        {
+                            str := GetContiguousView( range, 6 );
+                            codepoint, advance, result := character_utf8_to_utf32( str.data, str.count );
+                            str.count = advance;
+
+                            // TODO Extract glyph render function
+                            print( "UTF8: % -> codepoint % (%)\n", str, formatInt( codepoint, base = 16 ), result );
+
+                            // TODO Find or cache Unicode glyph
+                            glyph = *face.glyphs[127 - 32];
+
+                            ConsumeCount( *range, advance );
+                        }
+
+                        cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        cell.props.foregroundColor = cursor.props.foregroundColor;
+                        cell.props.backgroundColor = cursor.props.backgroundColor;
+                        cell.props.flags = cursor.props.flags;
                     }
 
-                    cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
-                    cell.props.foregroundColor = cursor.props.foregroundColor;
-                    cell.props.backgroundColor = cursor.props.backgroundColor;
-                    cell.props.flags = cursor.props.flags;
+                    AdvanceColumn( cursor, lineWrap = true, renderer );
                 }
-
-                AdvanceColumn( cursor, lineWrap = true, renderer );
             }
         }
     }
@@ -1032,6 +1047,37 @@ ConsumeCount :: ( range: *SourceBufferRange, count: s64 )
     range.absP += count;
     range.count -= count;
 }
+
+GetContiguousView :: ( range: [] u8, count: s64 ) -> [] u8
+{
+    if count > range.count
+        count = range.count;
+
+    return .{ count, range.data };
+}
+
+// Returns a temp copy if the SourceBufferRange cannot fit 'count' contiguous bytes
+GetContiguousView :: ( range: SourceBufferRange, count: s64 ) -> [] u8
+{
+    if count > range.count
+        count = range.count;
+
+    relP := range.absP & SourceBuffer.SizeMask;
+    remaining := SourceBuffer.MaxSize - relP;
+
+    if count > remaining
+    {
+        result := NewArray( count, u8,, temp );
+        memcpy( result.data, range.base + relP, remaining );
+        memcpy( result.data + remaining, range.base, count - remaining );
+        return result;
+    }
+    else
+    {
+        return .{ count, range.base + relP };
+    }
+}
+
 
 IsDigit :: ( char: u8 ) -> bool
 {

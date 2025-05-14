@@ -174,8 +174,8 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         if it == 127
         {
             // Special-case last glyph to use as both cursor and "unknown" character
-            // TODO Make temporary
             buffer: [..] u8;
+            buffer.allocator = temp;
             // GL_UNPACK_ALIGNMENT of 4 seems to suit FT's subpixel-rendered bitmaps, so this one needs to respect that too
             // See the description for 'pitch' in https://freetype.org/freetype2/docs/reference/ft2-basic_types.html#ft_bitmap
             pitch := AlignUp( loadedFace.advance * 3, 4 );
@@ -202,7 +202,6 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
             //DumpGlyphBitmapData( buffer.data, xx pitch, xx loadedFace.lineHeight );
         }
         else
-
         {
             // Enable subpixel rendering (3 separate alpha components per pixel)
             error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );

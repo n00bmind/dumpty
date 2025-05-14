@@ -58,7 +58,18 @@ main :: ()
     appDLLName := sprint( "%.dll", APP_DLL_NAME );
     appDLLPath := join( runPath, appDLLName );
 
-    loadedFace, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16 );
+    // TODO See if Jai provides utils to find out the path of font families
+    // TODO Do we want to embed a Nerdfont for the fancy airline-like chars?
+    // loadedFace, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16 );
+    // TODO Expand %WINDIR%
+    loadedFace, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf" , 15 );
+    // TODO Embed a small unicode fallback font as well?
+    // https://unifoundry.com/unifont/index.html
+    // https://github.com/unicode-org/last-resort-font?tab=readme-ov-file
+    // https://juliamono.netlify.app/
+    // https://www.reddit.com/r/fonts/comments/t453va/what_is_the_most_unicodecomplete_monospaced_font/
+    // (.."DejaVu Sans Mono is a highly practical font with a massive collection of Unicode characters"..)
+    // What does refterm do for fallbacks? Does DWrite handle it automatically?
     if !success
     {
         print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
