@@ -767,11 +767,16 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                             codepoint, advance, result := character_utf8_to_utf32( str.data, str.count );
                             str.count = advance;
 
+                            entry := FindOrAddGlyphEntry( codepoint, renderer.glyphTable );
+                            if entry.cacheState != .Rasterized
+                            {
+                                PrepareGlyphTiles( codepoint, entry.atlasIndex, renderer );
+                                UpdateGlyphEntry( entry, .Rasterized );
+                            }
+                            glyph = *face.glyphs[ entry.atlasIndex ];
+
                             // TODO Extract glyph render function
                             print( "UTF8: % -> codepoint % (%)\n", str, formatInt( codepoint, base = 16 ), result );
-
-                            // TODO Find or cache Unicode glyph
-                            glyph = *face.glyphs[127 - 32];
 
                             ConsumeCount( *range, advance );
                         }
