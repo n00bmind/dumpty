@@ -42,7 +42,7 @@ GlyphTable :: struct
     entries: Table( u32, GlyphEntry, LOAD_FACTOR_PERCENT = 99, REFILL_REMOVED = true );
     // 'lruPrev' here points to the LRU entry
     lruSentinel: GlyphEntry;
-    freeSlotsSentinel: GlyphSlot;
+    freeSlots: GlyphSlot;
 }
 
 
@@ -84,7 +84,7 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
 
     // Add this entry as the new MRU
     entry.lruNext = table.lruSentinel.lruNext;
-    entry.lruPrev = 0;
+    entry.lruPrev = U32_MAX;
 
     nextEntry := GetEntry( table.entries, table.lruSentinel.lruNext );
     nextEntry.lruPrev = entryIndex;
@@ -127,3 +127,24 @@ FindEntryIndex( table: *Table, key: u32 ) -> u32
 
     return index;
 }
+
+PopFreeSlot( table: *GlyphTable ) -> *GlyphSlot
+{
+    if !table.freeSlots.next
+    {
+        slot := EvictLRU( table );
+        return slot;
+    }
+
+    result := table.freeSlots.next;
+
+    next := result.next;
+    // TODO Why do we even doubly link these?
+    next.prev = *table.freeSlots;
+    table.freeSlots.next = next;
+    
+    result.next = null;
+    result.prev = null;
+    return result;
+}
+

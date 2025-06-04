@@ -85,7 +85,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     {
                         AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) cmdline.input ) );
                         if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input, appState )
-                        AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing builtin command\n" );
+                            AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing builtin command\n" );
                     }
                     else
                     {
@@ -93,7 +93,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                         //
                         push( *cmdline.input, "\n" );
                         if !ExecuteShellCommand( *appState.shellProcess, cmdline.input )
-                        AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
+                            AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
                     }
 
                     cmdline.input.count = 0;
@@ -763,6 +763,8 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                         }
                         else
                         {
+                            // TODO Shaping, font fallback, etc
+
                             str := GetContiguousView( range, 6 );
                             codepoint, advance, result := character_utf8_to_utf32( str.data, str.count );
                             str.count = advance;
