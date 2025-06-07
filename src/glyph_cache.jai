@@ -2,16 +2,20 @@
 GlyphSlot :: struct
 {
     // TODO If we (should) allocate these all in one block, these can (should) be indices
+    // TODO Could actually go one further, and just initially push all available atlas indices
+    // into an array and grab from that until they run out!?
     next: *GlyphSlot;
-    prev: *GlyphSlot;
     // Linear index into the atlas
+    // TODO Do we want to instead pack the X.Y here like refterm does?
     index: u32;
 }
 
 GlyphEntry :: struct
 {
+    // Keys to the linked entries in the chain
     lruNext: u32;
     lruPrev: u32;
+
     slot: *GlyphSlot;
     cachedState: GlyphEntryView.CachedState;
     // TODO These are tiles yeah?
@@ -19,7 +23,6 @@ GlyphEntry :: struct
 }
 
 // A "public view" of the above entry
-// NOTE The id contained here can go stale, so these should be considered temporary! 
 GlyphEntryView :: struct
 {
     CachedState :: enum
@@ -28,9 +31,9 @@ GlyphEntryView :: struct
         Rasterised;
     }
 
-    // Entry index
-    id: u32;
-    // Atlas index
+    // Entry locator (key to entries table, i.e. codepoint value)
+    key: u32;
+    // Linear index into the atlas
     slotIndex: u32;
     // User data
     cachedState: GlyphEntryView.CachedState;
@@ -52,11 +55,15 @@ InitGlyphCache :: ( table: *GlyphTable )
     // NOTE GlyphCacheSize is the number of non-reserved slots in the atlas
     // Allocate double that to ensure the hashtable never has to reallocate
     init( table.entries, GlyphCacheSize * 2 );
+
+    // TODO Slots array & chain initialisation
 }
 
 FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
 {
-    entry := table_find_pointer( table, codepoint );
+    assert( codepoint && "Codepoint 0 is reserved and cannot be added to the glyph table" );
+
+    entry := table_find_pointer( table.entries, codepoint );
     if entry
     {
         // Remove current LRU link for this entry
@@ -78,21 +85,17 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
         entry = table_add( table, key, newEntry );
     }
 
-    // TODO This is quite stupid as we need to query the entry again
-    // Should we just store all GlyphEntrys in a separate array?
-    entryIndex = FindEntryIndex( entry );
-
     // Add this entry as the new MRU
     entry.lruNext = table.lruSentinel.lruNext;
-    entry.lruPrev = U32_MAX;
+    entry.lruPrev = 0;
 
     nextEntry := GetEntry( table.entries, table.lruSentinel.lruNext );
-    nextEntry.lruPrev = entryIndex;
-    table.lruSentinel.lruNext = entryIndex;
+    nextEntry.lruPrev = codepoint;
+    table.lruSentinel.lruNext = codepoint;
 
 
     result: GlyphEntryView;
-    result.id          = entryIndex;
+    result.key         = codepoint;
     result.slotIndex   = entry.slot.index;
     result.cachedState = entry.cachedState;
     result.dimX        = entry.dimX;
@@ -105,46 +108,65 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
 
 #scope_file
 
-GetEntry( table: *Table, index: u32 ) -> *GlyphEntry
+GetEntry( table: *Table, key: u32 ) -> *GlyphEntry
 {
-    assert( index < table.allocated );
+    entry := table_find_pointer( table, key );
+    // All entries we look for should exist
+    assert( entry );
 
-    entry := *table.entries[index];
-    return *entry.value;
+    return entry;
 }
 
-FindEntryIndex( table: *Table, key: u32 ) -> u32
+#if 0
 {
-    Walk_Table(#code
+    FindEntryIndex( table: *Table, key: u32 ) -> u32
     {
-        entry := *table.entries[index];
-        if entry.hash == hash
+        Walk_Table(#code
         {
-            if inline table.compare_function( entry.key, key )
-                break;
-        }
-    });
+            entry := *table.entries[index];
+            if entry.hash == hash
+            {
+                if inline table.compare_function( entry.key, key )
+                    break;
+            }
+        });
 
-    return index;
+        return index;
+    }
 }
 
 PopFreeSlot( table: *GlyphTable ) -> *GlyphSlot
 {
-    if !table.freeSlots.next
+    result: *GlyphSlot;
+
+    if table.freeSlots.next
     {
-        slot := EvictLRU( table );
-        return slot;
+        result = table.freeSlots.next;
+
+        table.freeSlots.next = result.next;
+        result.next = null;
+    }
+    else
+    {
+        result = EvictLRU( table );
     }
 
-    result := table.freeSlots.next;
-
-    next := result.next;
-    // TODO Why do we even doubly link these?
-    next.prev = *table.freeSlots;
-    table.freeSlots.next = next;
-    
-    result.next = null;
-    result.prev = null;
     return result;
 }
 
+EvictLRU :: ( table: *GlyphTable ) -> *GlyphSlot
+{
+    evictedKey := table.lruSentinel.lruPrev;
+    assert( evictedKey );
+
+    entry := GetEntry( table.entries, evictedKey );
+    prev := GetEntry( table.entries, entry.lruPrev );
+
+    prev.lruNext = 0;
+    table.lruSentinel.lruPrev = entry.lruPrev;
+
+    result := entry.slot;
+    table_remove( table.entries, evictedKey );
+
+    return result;
+}
