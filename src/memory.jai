@@ -122,17 +122,18 @@ Alloc :: ( using arena: *MemoryArena, $T: Type, params: MemoryParams = .{} ) -> 
     newParams := params;
     newParams.alignment = max( params.alignment, xx alignof(T) );
 
-    // TODO Investigate this business
     clear := !(params.flags & MemoryFlags.NoClear);
-    init  :: initializer_of(T);
-    #if init
+    // NOTE At some point, 'init' has become reserved, or something now makes it impossible to use it in an #if expression !?
+    // TODO I suspect this may (somehow!) be colliding with the 'init' procedure for Hash_Table !?
+    ini :: initializer_of(T);
+    #if ini
         newParams.flags |= MemoryFlags.NoClear;
 
     result := cast(*T) inline Alloc( arena, sizeof(T), newParams );
-    #if init
+    #if ini
     {
         if clear
-            inline init( result );
+            inline ini( result );
     }
 
     return result;
@@ -144,8 +145,8 @@ AllocArray :: ( using arena: *MemoryArena, $T: Type, count: int, params: MemoryP
     newParams.alignment = max( params.alignment, xx alignof(T) );
 
     clear := !(params.flags & MemoryFlags.NoClear);
-    init  :: initializer_of(T);
-    #if init
+    ini :: initializer_of(T);
+    #if ini
         newParams.flags |= MemoryFlags.NoClear;
 
     base := Alloc( arena, count * sizeof(T), newParams );
@@ -154,12 +155,12 @@ AllocArray :: ( using arena: *MemoryArena, $T: Type, count: int, params: MemoryP
     result.count = count;
     result.data  = base;
 
-    #if init
+    #if ini
     {
         if clear
         {
             for * result
-                inline init( it );
+                inline ini( it );
         }
     }
 

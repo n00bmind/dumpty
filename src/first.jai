@@ -211,9 +211,9 @@ main :: ()
     #import "Windows";
 }
 
-
 #load "interface.jai";
 #load "opengl.jai";
+
 
 // TODO Add to autosaved state & configuration
 INIT_WINDOW_WIDTH  :: 1000;

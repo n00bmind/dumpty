@@ -167,7 +167,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     }
     else
     {
-        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, memory.loadedFace, renderer );
+        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, memory.loadedFace, *appState.glyphTable,
+                            renderer );
     }
 }
 
@@ -428,6 +429,8 @@ AppState :: struct
     shellProcess: Process;
     builtinProcess: Process;
 
+    glyphTable: GlyphTable;
+
     lastInputSeconds: float64;
 }
 
@@ -460,6 +463,11 @@ IsRunning :: ( process: Process ) -> bool
 #load "interface.jai";
 #load "util.jai";
 #load "shell_cmd.jai";
+#load "glyph_cache.jai";
+
+// TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling
+#import "Window_Creation";
+#load "opengl.jai";
 
 
 SourceBufferRange :: struct
@@ -672,7 +680,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
 }
 
 LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine, face: *LoadedFace,
-                        renderer: *RendererState )
+                        glyphTable: *GlyphTable, renderer: *RendererState )
 {
     ClearScreenBuffer( renderer );
 
@@ -700,11 +708,11 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         // TODO Test huge lines straddling the end of the source buffer
         range := GetBufferRange( line, sourceBuffer );
 
-        ComputeRenderedGlyphs( range, *cursor, face, renderer );
+        ComputeRenderedGlyphs( range, *cursor, face, glyphTable, renderer );
     }
 
     // Current commandline contents
-    ComputeRenderedGlyphs( commandString, *cursor, face, renderer );
+    ComputeRenderedGlyphs( commandString, *cursor, face, glyphTable, renderer );
 
     // TODO Actual moveable cursor
     cell := GetCellAt( cursor, renderer );
@@ -721,7 +729,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     renderer.firstRowY = cursor.y;
 }
 
-ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFace, renderer: *RendererState )
+ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFace, glyphTable: *GlyphTable, renderer: *RendererState )
 {
     while range.count > 0
     {
@@ -755,6 +763,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                     cell := GetCellAt( cursor.*, renderer );
                     if cell
                     {
+                        // TODO Just directly get an index from both branches
                         glyph: *Glyph;
                         if c0 >= 32 && c0 < 127
                         {
@@ -769,13 +778,14 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                             codepoint, advance, result := character_utf8_to_utf32( str.data, str.count );
                             str.count = advance;
 
-                            entry := FindOrAddGlyphEntry( codepoint, renderer.glyphTable );
-                            if entry.cacheState != .Rasterized
+                            entry := FindOrAddGlyphEntry( codepoint, glyphTable );
+                            if entry.state != .Rasterised
                             {
-                                PrepareGlyphTiles( codepoint, entry.atlasIndex, renderer );
-                                UpdateGlyphEntry( entry, .Rasterized );
+                                PrepareGlyphTiles( codepoint, entry.slot, renderer );
+                                UpdateGlyphEntry( entry.key, .Rasterised, 1, 1, glyphTable );
                             }
-                            glyph = *face.glyphs[ entry.atlasIndex ];
+                            // TODO 
+                            // glyph = *face.glyphs[ entry.atlasIndex ];
 
                             // TODO Extract glyph render function
                             print( "UTF8: % -> codepoint % (%)\n", str, formatInt( codepoint, base = 16 ), result );
@@ -1177,8 +1187,8 @@ GetCellAt :: ( cursor: CursorState, renderer: *RendererState ) -> *RendererCell
 
 Init :: ( process: *Process )
 {
-    init :: initializer_of(Process);
-    inline init( process );
+    ini :: initializer_of(Process);
+    inline ini( process );
 
     #if OS == .WINDOWS
         process.info.hProcess = INVALID_HANDLE_VALUE;

@@ -79,6 +79,12 @@ GlyphProps :: struct
     flags: Flags;
 }
 
+GlyphSlot :: struct
+{
+    // Tile coords into the atlas
+    x, y: u16;
+}
+
 LoadedFace :: struct
 {
     glyphs     : [128-32] Glyph;

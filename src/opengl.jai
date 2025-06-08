@@ -266,6 +266,11 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     return loadedFace, true;
 }
 
+PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, renderer: *RendererState )
+{
+    // TODO 
+}
+
 
 // Disable to use previous path using a collection of contiguously-mapped uniform blocks (UBOs)
 // Doesn't seem to offer a real speed advantage (most likely due to the limitation of using a constant expression to index them),
