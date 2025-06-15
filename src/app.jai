@@ -163,12 +163,11 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
     #if false
     {
-        UpdateRendererCells( renderer, memory.loadedFace, appState.sourceBuffer, appState.lineOffset, <<cmdline );
+        UpdateRendererCells( renderer, appState.sourceBuffer, appState.lineOffset, <<cmdline );
     }
     else
     {
-        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, memory.loadedFace, *appState.glyphTable,
-                            renderer );
+        LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, *appState.glyphTable, renderer );
     }
 }
 
@@ -550,10 +549,11 @@ DebugDrawLineBufferValues :: false;
 DebugLineValuesReservedCols :: 17;
 
 // TODO Delete
-UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine )
+UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine )
 {
     LineValuesColOffset :: #ifx DebugDrawLineBufferValues then DebugLineValuesReservedCols else 0;
 
+    font := renderer.loadedFont;
     fg := PackColor( .{ 1, 1, 1 } );
     bg := PackColor( .{ 0.15, 0.15, 0.2 } );
 
@@ -587,7 +587,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                 if col < LineValuesColOffset
                 {
                     char := GetLineBufferCharAt( <<line, col );
-                    dst.glyphIndex = GlyphIndexForChar( char, face );
+                    dst.glyphIndex = GlyphIndexForChar( char, font );
                     dst.props.foregroundColor = PackColor( .{ 0.5, 0.5, 0.5 } );
                     continue;
                 }
@@ -606,15 +606,15 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
                     if col >= cmdLineStartPos && col < cmdLineStartPos + commandString.count
                     {
                         char := commandString[ col - cmdLineStartPos ];
-                        glyph := *face.glyphs[ char - 32 ];
-                        dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        glyph := *font.glyphs[ char - 32 ];
+                        dst.glyphIndex = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
                         continue;
                     }
                     // FIXME Actual cursor pos
                     else if col >= cmdLineStartPos && col == cmdLineStartPos + commandString.count
                     {
-                        glyph := *face.glyphs[127 - 32];
-                        dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        glyph := *font.glyphs[127 - 32];
+                        dst.glyphIndex = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
                         dst.props.flags |= .Blinking;
                         continue;
                     }
@@ -626,7 +626,7 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
             }
 
             char := GetCharAt( sourceBuffer, <<line, col );
-            dst.glyphIndex = GlyphIndexForChar( char, face );
+            dst.glyphIndex = GlyphIndexForChar( char, font );
         }
 
         // TODO Line wrapping
@@ -647,40 +647,40 @@ UpdateRendererCells :: ( renderer: *RendererState, face: *LoadedFace, sourceBuff
 
             glyph: *Glyph;
             if col == 0
-                glyph = *face.glyphs[ #char ">" - 32 ];
+                glyph = *font.glyphs[ #char ">" - 32 ];
             else if col == 1
-                glyph = *face.glyphs[ #char " " - 32 ];
+                glyph = *font.glyphs[ #char " " - 32 ];
             else if col == command.count + 2
             {
-                glyph = *face.glyphs[127 - 32];
+                glyph = *font.glyphs[127 - 32];
                 dst.props.flags |= .Blinking;
             }
             else if col > command.count + 2
             {
-                glyph = *face.glyphs[0];
+                glyph = *font.glyphs[0];
             }
             else
             {
                 char := command[ col - 2 ];
                 if char >= 32 && char <= 127
                 {
-                    glyph = *face.glyphs[ char - 32 ];
+                    glyph = *font.glyphs[ char - 32 ];
                 }
                 else
                 {
                     // TODO Unknown symbol should be separate from the cursor glyph
-                    glyph = *face.glyphs[127 - 32];
+                    glyph = *font.glyphs[127 - 32];
                 }
             }
-            dst.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+            dst.glyphIndex = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
 
             dst += 1;
         }
     }
 }
 
-LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine, face: *LoadedFace,
-                        glyphTable: *GlyphTable, renderer: *RendererState )
+LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine: CommandLine, glyphTable: *GlyphTable,
+                        renderer: *RendererState )
 {
     ClearScreenBuffer( renderer );
 
@@ -708,18 +708,18 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
         // TODO Test huge lines straddling the end of the source buffer
         range := GetBufferRange( line, sourceBuffer );
 
-        ComputeRenderedGlyphs( range, *cursor, face, glyphTable, renderer );
+        ComputeRenderedGlyphs( range, *cursor, glyphTable, renderer );
     }
 
     // Current commandline contents
-    ComputeRenderedGlyphs( commandString, *cursor, face, glyphTable, renderer );
+    ComputeRenderedGlyphs( commandString, *cursor, glyphTable, renderer );
 
     // TODO Actual moveable cursor
     cell := GetCellAt( cursor, renderer );
     if cell
     {
-        glyph := *face.glyphs[127 - 32];
-        cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+        glyph := *renderer.loadedFont.glyphs[127 - 32];
+        cell.glyphIndex = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
         cell.props = cursor.props;
         cell.props.flags |= .Blinking;
     }
@@ -729,8 +729,10 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     renderer.firstRowY = cursor.y;
 }
 
-ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFace, glyphTable: *GlyphTable, renderer: *RendererState )
+ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *GlyphTable, renderer: *RendererState )
 {
+    font := renderer.loadedFont;
+
     while range.count > 0
     {
         c0 := PeekToken( range, 0 );
@@ -767,7 +769,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                         glyph: *Glyph;
                         if c0 >= 32 && c0 < 127
                         {
-                            glyph = *face.glyphs[ c0 - 32 ];
+                            glyph = *font.glyphs[ c0 - 32 ];
                             ConsumeCount( *range, 1 );
                         }
                         else
@@ -781,11 +783,11 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                             entry := FindOrAddGlyphEntry( codepoint, glyphTable );
                             if entry.state != .Rasterised
                             {
-                                PrepareGlyphTiles( codepoint, entry.slot, renderer );
+                                PrepareGlyphTiles( codepoint, entry.slot, renderer.loadedFont );
                                 UpdateGlyphEntry( entry.key, .Rasterised, 1, 1, glyphTable );
                             }
                             // TODO 
-                            // glyph = *face.glyphs[ entry.atlasIndex ];
+                            // glyph = *font.glyphs[ entry.atlasIndex ];
 
                             // TODO Extract glyph render function
                             print( "UTF8: % -> codepoint % (%)\n", str, formatInt( codepoint, base = 16 ), result );
@@ -793,7 +795,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, face: *LoadedFac
                             ConsumeCount( *range, advance );
                         }
 
-                        cell.glyphIndex = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+                        cell.glyphIndex = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
                         cell.props.foregroundColor = cursor.props.foregroundColor;
                         cell.props.backgroundColor = cursor.props.backgroundColor;
                         cell.props.flags = cursor.props.flags;
@@ -988,13 +990,13 @@ GetLineBufferCharAt :: ( line: Line, col: int ) -> u8
     return 0;
 }
 
-GlyphIndexForChar :: ( char: u8, face: *LoadedFace ) -> u32
+GlyphIndexForChar :: ( char: u8, font: *LoadedFont ) -> u32
 {
     result: u32;
     if char >= 32 && char < 127
     {
-        glyph := face.glyphs[ char - 32 ];
-        result = cast(u32)((glyph.index.y << 16) | glyph.index.x);
+        glyph := font.glyphs[ char - 32 ];
+        result = cast(u32)((glyph.tile.y << 16) | glyph.tile.x);
     }
     else
     {

@@ -101,18 +101,16 @@ DumpGlyphBitmapData :: ( glyph: FT_GlyphSlot )
 }
 
 FONT_TEX_ATLAS_SIZE :: 1024;
+// Undefined in the provided bindings
+// TODO Investigate SDF rendering supported on latest FT .. see https://github.com/tsoding/ded/pull/60
+//#define FT_LOAD_TARGET_( x )   ( FT_STATIC_CAST( FT_Int32, (x) & 15 ) << 16 )
+//#define FT_LOAD_TARGET_LCD     FT_LOAD_TARGET_( FT_RENDER_MODE_LCD    )
+FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
+    
 
 // Loads a font from disk using Freetype and creates an atlas for it
-OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
+OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> LoadedFont, bool
 {
-    ft: FT_Library;
-    error := FT_Init_FreeType( *ft );
-    if error
-    {
-        print( "Failed initialising FreeType lib!" );
-        return .{}, false;
-    }
-
     fontData, success := read_entire_file( path );
     if !success
     {
@@ -120,32 +118,47 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
         return .{}, false;
     }
 
-    face: FT_Face;
-    error = FT_New_Memory_Face( ft, fontData.data, cast(s32) fontData.count, 0, *face );
+    // FT_Face is actually just an alias for *FT_FaceRec_
+    face := New( FT_FaceRec_ );
+    error := FT_New_Memory_Face( ft.*, fontData.data, cast(s32) fontData.count, 0, *face );
     if error
     {
         print( "Failed parsing font '%'\n", path );
         return .{}, false;
     }
 
-    error = FT_Set_Pixel_Sizes( face, 0, xx pixelHeight );
+    error = FT_Set_Pixel_Sizes( face, 0, xx fontHeightPixels );
     assert(!error);
 
-    
-    loadedFace: LoadedFace;
-    loadedFace.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
-    print( "Font line height is %\n", loadedFace.lineHeight );
-    // TODO Apparently relying on the ascender / descender is.. unreliable .. see https://freetype.org/freetype2/docs/tutorial/step2.html
-    loadedFace.descender = abs( cast(s32)(face.size.metrics.descender / 64.0) );
-    print( "Font descender is %\n", loadedFace.descender );
+    loadedFont: LoadedFont;
+    loadedFont.face = face;
+    loadedFont.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
+    print( "Font line height is %\n", loadedFont.lineHeight );
 
+    // Get font advance from first glyph
+    error = FT_Load_Char( face, 0, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
+    if error
+    {
+        print( "Failed to load first glyph for estimating advance\n" );
+        assert( false );
+    }
+    // FIXME Since FT only provides an integer value, this becomes quite imprecise at small sizes.
+    // In a way we're doing our own grid fitting. Investigate what the best practice is here..
+    // TODO Try to find and test non-integer sizes and see how the shader responds
+    loadedFont.advance = cast(s32) Round( face.glyph.advance.x / 64.0 );
+    print( "Font advance is % (rounded from %)\n", loadedFont.advance, face.glyph.advance.x / 64.0 );
+
+    // TODO Apparently relying on the ascender / descender is.. unreliable .. see https://freetype.org/freetype2/docs/tutorial/step2.html
+    loadedFont.descender = abs( cast(s32)(face.size.metrics.descender / 64.0) );
+    print( "Font descender is %\n", loadedFont.descender );
     // NOTE Using the bbox for the atlas is technically correct as that guarantees to provide enough space for all the font's glyphs
     // However in the simple grid shader we're using, we need glyphs in the atlas to be rendered in the same grid they'll be placed into in the final image
     // This is mostly unimportant when dealing with ASCII only, but it will become more relevant when we support unicode
     pixels_w := FT_MulFix( (face.bbox.xMax - face.bbox.xMin), face.size.metrics.x_scale ) / 64.0;
     pixels_h := FT_MulFix( (face.bbox.yMax - face.bbox.yMin), face.size.metrics.y_scale ) / 64.0;
     print( "Font bbox: % x %\n", pixels_w, pixels_h );
-    loadedFace.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
+    loadedFont.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
+
 
     // TODO This must be 1 when doing 1-byte per pixel font textures
     // TODO Make a container for application settings
@@ -153,41 +166,35 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
     // TODO Play with the various settings available in https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
     glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
 
-    glGenTextures( 1, *loadedFace.texture );
-    glBindTexture( GL_TEXTURE_2D, loadedFace.texture );
+    glGenTextures( 1, *loadedFont.texture );
+    glBindTexture( GL_TEXTURE_2D, loadedFont.texture );
     // TODO Should probably check pixel_mode in the bitmap
     glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
 
-    // Undefined in the provided bindings
-    // TODO Investigate SDF rendering supported on latest FT .. see https://github.com/tsoding/ded/pull/60
-    //#define FT_LOAD_TARGET_( x )   ( FT_STATIC_CAST( FT_Int32, (x) & 15 ) << 16 )
-    //#define FT_LOAD_TARGET_LCD     FT_LOAD_TARGET_( FT_RENDER_MODE_LCD    )
-    FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
-
     // Load glyphs for ASCII
-    x, y, xoffset, yoffset : s32 = 0;
-    baseline := loadedFace.lineHeight - loadedFace.descender;
+    // FIXME At size 15 with consolas.ttf, the 'W' gets cut on the right side!
+    x, y: u16 = 0;
+    // TODO lineHeight may be still too much.. maybe use the font's pixel height?
+    W, H := loadedFont.advance, loadedFont.lineHeight;
     for 32..127
     {
-        pixelWidth: u32;
-
         if it == 127
         {
-            // Special-case last glyph to use as both cursor and "unknown" character
+            // Special-case last glyph to use as cursor 
             buffer: [..] u8;
             buffer.allocator = temp;
             // GL_UNPACK_ALIGNMENT of 4 seems to suit FT's subpixel-rendered bitmaps, so this one needs to respect that too
             // See the description for 'pitch' in https://freetype.org/freetype2/docs/reference/ft2-basic_types.html#ft_bitmap
-            pitch := AlignUp( loadedFace.advance * 3, 4 );
-            array_resize( *buffer, pitch * loadedFace.lineHeight );
+            pitch := AlignUp( loadedFont.advance * 3, 4 );
+            array_resize( *buffer, pitch * loadedFont.lineHeight );
 
-            for j: 0..loadedFace.lineHeight - 1
+            for j: 0..loadedFont.lineHeight - 1
             {
-                for i: 0..loadedFace.advance - 1
+                for i: 0..loadedFont.advance - 1
                 {
                     // TODO Cursor style setting
-                    //atBorder := (i == 0 || j == 0 || i == loadedFace.advance - 1 || j == loadedFace.lineHeight - 1);
-                    //atBorder := (j == loadedFace.lineHeight - 1);
+                    //atBorder := (i == 0 || j == 0 || i == loadedFont.advance - 1 || j == loadedFont.lineHeight - 1);
+                    //atBorder := (j == loadedFont.lineHeight - 1);
                     //atBorder := (i == 0 || i == 1);
                     atBorder := true;
                     buffer[j * pitch + i*3 + 0] = xx ifx atBorder then 0xFF else 0;
@@ -196,79 +203,74 @@ OpenGLLoadFont :: ( path: string, pixelHeight: int ) -> LoadedFace, bool
                 }
             }
 
-            glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset, yoffset, xx loadedFace.advance, xx loadedFace.lineHeight, GL_RGB, GL_UNSIGNED_BYTE, buffer.data );
-            // FIXME Should set correct size & bearing for this guy
+            glTexSubImage2D( GL_TEXTURE_2D, 0, x * W, y * H, xx W, xx H, GL_RGB, GL_UNSIGNED_BYTE, buffer.data );
 
-            //DumpGlyphBitmapData( buffer.data, xx pitch, xx loadedFace.lineHeight );
+            //DumpGlyphBitmapData( buffer.data, xx pitch, xx loadedFont.lineHeight );
         }
         else
         {
-            // Enable subpixel rendering (3 separate alpha components per pixel)
-            error := FT_Load_Char( face, cast(u32) it, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
-            if error
+            slot := GlyphSlot.{ x, y };
+
+            ok := PrepareGlyphTiles( cast(u32) it, slot, loadedFont );
+            if !ok
             {
-                print( "Failed to load glyph for character %\n", it );
-                continue;
+                print( "Failed to load glyph for ASCII %\n", it );
+                return .{}, false;
             }
-
-            // NOTE FT docs incorrectly report this field as being the width in pixels
-            pixelWidth = face.glyph.bitmap.width / 3;
-            assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
-
-            // Some chars are just empty
-            if pixelWidth && face.glyph.bitmap.rows
-                glTexSubImage2D( GL_TEXTURE_2D, 0, xoffset + face.glyph.bitmap_left, yoffset + baseline - face.glyph.bitmap_top,
-                                 pixelWidth, face.glyph.bitmap.rows, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
-
-            // FIXME Since FT only provides an integer value, this becomes quite imprecise at small sizes.
-            // In a way we're doing our own grid fitting. Investigate what the best practice is here..
-            // TODO Try to find and test non-integer sizes and see how the shader responds
-            advance := cast(s32) Round( face.glyph.advance.x / 64.0 );
-            if loadedFace.advance == 0
-            {
-                loadedFace.advance = advance;
-                print( "Font advance is % (rounded from %)\n", loadedFace.advance, face.glyph.advance.x / 64.0 );
-            }
-            // TODO There are glyphs with a bigger pitch than their reported advance, so what's the deal with those?
-            // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads. Check U, V, W at small sizes
-            assert( advance == loadedFace.advance, "Font has non-uniform advance" );
 
             //if it == 87
                 //DumpGlyphBitmapData( face.glyph );
         }
 
-        g := *(loadedFace.glyphs[ it - 32 ]);
-        g.index   = .{ x, y };
-        g.offset  = .{ xoffset, yoffset };
-        g.size    = .{ cast(s32) pixelWidth, cast(s32) face.glyph.bitmap.rows };
+        g := *(loadedFont.glyphs[ it - 32 ]);
+        g.tile    = .{ x, y };
+        g.size    = .{ cast(s32) face.glyph.bitmap.width / 3, cast(s32) face.glyph.bitmap.rows };
         g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
 
-        //print( "Loaded character %: %\n", it, loadedFace.glyphs[ it - 32 ] );
+        //print( "Loaded character %: %\n", it, loadedFont.glyphs[ it - 32 ] );
 
         x += 1;
-        xoffset += loadedFace.advance;
-        // Conservatively break the line when one more full-width glyph won't fit
-        if xoffset + loadedFace.advance > FONT_TEX_ATLAS_SIZE
+        if x >= FONT_TEX_ATLAS_SIZE / loadedFont.advance
         {
-            y += 1;
-            // TODO This may be still too much.. maybe use the font's pixel height?
-            yoffset += loadedFace.lineHeight;
-            assert( yoffset + loadedFace.lineHeight <= FONT_TEX_ATLAS_SIZE );
-
             x = 0;
-            xoffset = 0;
+            y += 1;
+            assert( (y + 1) * H <= FONT_TEX_ATLAS_SIZE );
         }
     }
 
-    FT_Done_Face( face );
-    FT_Done_FreeType( ft );
-
-    return loadedFace, true;
+    return loadedFont, true;
 }
 
-PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, renderer: *RendererState )
+PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bool
 {
-    // TODO 
+    face := cast(FT_Face) font.face;
+
+    // Enable subpixel rendering (3 separate alpha components per pixel)
+    error := FT_Load_Char( face, codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
+    if error
+        return false;
+
+    W, H := font.advance, font.lineHeight;
+    baseline := font.lineHeight - font.descender;
+
+    // NOTE FT docs incorrectly report this field as being the width in pixels
+    pixelWidth := face.glyph.bitmap.width / 3;
+    assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
+    pixelHeight := face.glyph.bitmap.rows;
+
+    // Some chars are just empty
+    // if pixelWidth && pixelHeight
+    {
+        glTexSubImage2D( GL_TEXTURE_2D, 0, slot.x * W + face.glyph.bitmap_left, slot.y * H + baseline - face.glyph.bitmap_top,
+                         pixelWidth, pixelHeight, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
+    }
+
+    advance := cast(s32) Round( face.glyph.advance.x / 64.0 );
+    // TODO There are glyphs with a bigger pitch than their reported advance, so what's the deal with those?
+    // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads. Check U, V, W at small sizes
+    assert( advance == font.advance, "Font has non-uniform advance" );
+
+    return true;
 }
 
 
@@ -278,7 +280,7 @@ PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, renderer: *RendererState
 // and will still be insufficient for fullscreen windows with a small font size
 USE_TEXTURE_BUFFER :: true;
 
-OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState )
+OpenGLRender :: ( state: *OpenGLState, font: LoadedFont, renderer: RendererState )
 {
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
@@ -288,7 +290,7 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
     glUseProgram( state.gridShader.program );    
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
+    glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
@@ -324,9 +326,9 @@ OpenGLRender :: ( state: *OpenGLState, face: LoadedFace, renderer: RendererState
 
 // For testing
 // Draw a text string with the given font by issuing a separate quad per glyph
-OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, face: LoadedFace )
+OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, font: LoadedFont )
 {
-    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, face: LoadedFace, vertices: *[6] TextVertex )
+    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, font: LoadedFont, vertices: *[6] TextVertex )
     {
         white :: Vector4.{ 1, 1, 1, 1 };
         red   :: Vector4.{ 1, 0, 0, 1 };
@@ -336,14 +338,14 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         x := xBase;
         y := yBase;
 
-        w := face.advance;
-        h := face.lineHeight;
+        w := font.advance;
+        h := font.lineHeight;
 
         s := cast(float) FONT_TEX_ATLAS_SIZE;
-        u0 := glyph.offset.x / s;
-        v0 := glyph.offset.y / s;
-        u1 := (glyph.offset.x + w) / s;
-        v1 := (glyph.offset.y + h) / s;
+        u0 := glyph.tile.x * w / s;
+        v0 := glyph.tile.y * h / s;
+        u1 := (glyph.tile.x + 1) * w / s;
+        v1 := (glyph.tile.y + 1) * h / s;
 
         (<<vertices)[1] = .{ position = Vector3.{ x, y, 0 }, color = white, uv = .{ u0, v0 } };
         (<<vertices)[0] = .{ position = Vector3.{ x, y + h, 0 }, color = white, uv = .{ u0, v1 } };
@@ -367,20 +369,21 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
     c := text.data;
     while c < text.data + text.count
     {
-        glyph := *face.glyphs[ <<c - 32 ];
-        glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
+        // TODO Only works for ASCII
+        glyph := *font.glyphs[ <<c - 32 ];
+        glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
-        DrawLetterQuad( <<c, xBase, yBase, <<glyph, face, *vertices );
+        DrawLetterQuad( <<c, xBase, yBase, <<glyph, font, *vertices );
 
         glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
         glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
         glDrawArrays( GL_TRIANGLES, 0, xx vertices.count );
 
-        xBase += face.advance;
+        xBase += font.advance;
         c += 1;
     }
 }
@@ -388,7 +391,7 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
 // For testing
 // Draw atlas of the given font by issuing a quad of the same size as the full texture
 // Font must be loaded already
-OpenGLDrawAtlas :: ( state: *OpenGLState, face: LoadedFace )
+OpenGLDrawAtlas :: ( state: *OpenGLState, font: LoadedFont )
 {
     glUseProgram( state.testShader.program );    
     glUniform1i( state.testShader.glyphSamplerUni, 0 );
@@ -397,7 +400,7 @@ OpenGLDrawAtlas :: ( state: *OpenGLState, face: LoadedFace )
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_2D, face.texture );  // Bind handle to slot 0.
+    glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );

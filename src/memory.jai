@@ -123,8 +123,8 @@ Alloc :: ( using arena: *MemoryArena, $T: Type, params: MemoryParams = .{} ) -> 
     newParams.alignment = max( params.alignment, xx alignof(T) );
 
     clear := !(params.flags & MemoryFlags.NoClear);
-    // NOTE At some point, 'init' has become reserved, or something now makes it impossible to use it in an #if expression !?
-    // TODO I suspect this may (somehow!) be colliding with the 'init' procedure for Hash_Table !?
+    // TODO Using 'init' here seems to (somehow!) be colliding with the 'init' procedure for Hash_Table !?
+    // (or something else makes it error out when used in the #if expression..)
     ini :: initializer_of(T);
     #if ini
         newParams.flags |= MemoryFlags.NoClear;

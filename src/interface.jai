@@ -21,7 +21,6 @@ AppInput :: struct
 AppMemory :: struct
 {
     appState: *void;
-    loadedFace: *LoadedFace;
 
     initialized: bool;
 }
@@ -36,6 +35,7 @@ RendererCell :: struct
 RendererState :: struct
 {
     cells : [] RendererCell;
+    loadedFont: *LoadedFont;
 
     // NOTE This mirrors the ConstantsBlock in the GridShader
     Constants :: struct
@@ -54,8 +54,7 @@ RendererState :: struct
 
 Glyph :: struct
 {
-    index:   v2s;
-    offset:  v2s;
+    tile:   v2s;
     size:    v2s;
     bearing: v2s;
 }
@@ -85,8 +84,9 @@ GlyphSlot :: struct
     x, y: u16;
 }
 
-LoadedFace :: struct
+LoadedFont :: struct
 {
+    face: *void;
     glyphs     : [128-32] Glyph;
     bbox       : v2s;
     advance    : s32;

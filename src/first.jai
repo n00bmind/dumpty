@@ -58,11 +58,19 @@ main :: ()
     appDLLName := sprint( "%.dll", APP_DLL_NAME );
     appDLLPath := join( runPath, appDLLName );
 
+    ft: FT_Library;
+    error := FT_Init_FreeType( *ft );
+    if error
+    {
+        print( "Failed initialising FreeType lib!" );
+        exit( 1 );
+    }
+
     // TODO See if Jai provides utils to find out the path of font families
     // TODO Do we want to embed a Nerdfont for the fancy airline-like chars?
-    // loadedFace, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16 );
+    // loadedFont, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16, *ft );
     // TODO Expand %WINDIR%
-    loadedFace, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf" , 15 );
+    loadedFont, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf", 15, *ft );
     // TODO Embed a small unicode fallback font as well?
     // https://unifoundry.com/unifont/index.html
     // https://github.com/unicode-org/last-resort-font?tab=readme-ov-file
@@ -72,13 +80,12 @@ main :: ()
     // What does refterm do for fallbacks? Does DWrite handle it automatically?
     if !success
     {
-        print( "Failed loading font 'data/fonts/consolas_nf_regular.ttf'\n" );
+        print( "Failed loading font!\n" );
         exit( 1 );
     }
-    appMemory.loadedFace = *loadedFace;
 
     renderer : RendererState;
-    InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
+    InitRendererState( *renderer, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
     
     quit := false;
     frameCount := 0;
@@ -114,7 +121,7 @@ main :: ()
                     windowWidth  = it.width;
                     windowHeight = it.height;
 
-                    InitRendererState( *renderer, windowWidth, windowHeight, loadedFace, glState.gridShader.maxCellCount );
+                    InitRendererState( *renderer, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
                     print( "New window dimensions: %, %\n", windowWidth, windowHeight );
                 }
             }
@@ -169,8 +176,11 @@ main :: ()
 
         UpdateAndRender( appInput, *appMemory, *renderer );
 
-        OpenGLRender( *glState, loadedFace, renderer );
-        //OpenGLDrawAtlas( *glState, loadedFace );
+        // TODO Put this under some key
+        // OpenGLDrawAtlas( *glState, loadedFont );
+        // OpenGLDrawTextWithFace( *glState, "H3llo w0rld!", 100, 100, loadedFont );
+        OpenGLRender( *glState, loadedFont, renderer );
+
         Swap( mainWindow );
 
         reset_temporary_storage();
@@ -193,6 +203,9 @@ main :: ()
     }
 
     Shutdown( *appMemory );
+
+    FT_Done_Face( cast(FT_Face) renderer.loadedFont.face );
+    FT_Done_FreeType( ft );
 
     exit( 0 );
 }
@@ -225,10 +238,11 @@ glState: OpenGLState;
 
 
 // TODO Move to app?
-InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, face: LoadedFace, maxCellCount: s32 )
+InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, font: *LoadedFont, maxCellCount: s32 )
 {
+    state.loadedFont   = font;
     state.windowDim    = .{ windowWidth, windowHeight };
-    state.cellSize     = .{ face.advance, face.lineHeight };
+    state.cellSize     = .{ font.advance, font.lineHeight };
     state.borderDim    = .{ 10, 6 };
     state.borderColor  = PackColor( .{ 0.15, 0.15, 0.2 } );
 
