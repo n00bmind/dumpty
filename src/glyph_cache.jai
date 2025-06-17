@@ -40,7 +40,7 @@ GlyphTable :: struct
 
 
 
-InitGlyphCache :: ( using table: *GlyphTable, freeSlotCount: u32, firstFreeSlotIdx: u32, slotsPerRow: u32 )
+InitGlyphCache :: ( using table: *GlyphTable, firstFreeSlotIdx: s32, freeSlotCount: s32, slotsPerRow: s32 )
 {
     // freeSlotCount is the number of non-reserved slots in the atlas
     // Allocate double that to ensure the hashtable never has to reallocate
@@ -66,6 +66,7 @@ InitGlyphCache :: ( using table: *GlyphTable, freeSlotCount: u32, firstFreeSlotI
     }
 }
 
+// TODO Step through all 3 branches here
 FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
 {
     assert( codepoint && "Codepoint 0 is reserved and cannot be added to the glyph table" );
@@ -74,8 +75,8 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
     if entry
     {
         // Remove current LRU link for this entry
-        prevEntry := GetEntry( *table.entries, entry.lruPrev );
-        nextEntry := GetEntry( *table.entries, entry.lruNext );
+        prevEntry := GetEntry( table, entry.lruPrev );
+        nextEntry := GetEntry( table, entry.lruNext );
 
         prevEntry.lruNext = entry.lruNext;
         nextEntry.lruPrev = entry.lruPrev;
@@ -99,7 +100,7 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
     entry.lruNext = table.lruSentinel.lruNext;
     entry.lruPrev = 0;
 
-    nextEntry := GetEntry( *table.entries, table.lruSentinel.lruNext );
+    nextEntry := GetEntry( table, table.lruSentinel.lruNext );
     nextEntry.lruPrev = codepoint;
     table.lruSentinel.lruNext = codepoint;
 
@@ -116,7 +117,7 @@ FindOrAddGlyphEntry :: ( codepoint: u32, table: *GlyphTable ) -> GlyphEntryView
 
 UpdateGlyphEntry :: ( key: u32, newState: GlyphEntryView.CachedState, newDimX: u8, newDimY: u8, table: *GlyphTable )
 {
-    entry := GetEntry( *table.entries, key );
+    entry := GetEntry( table, key );
     entry.state = newState;
     entry.dimX  = newDimX;
     entry.dimY  = newDimY;
@@ -128,13 +129,22 @@ UpdateGlyphEntry :: ( key: u32, newState: GlyphEntryView.CachedState, newDimX: u
 #import "Hash_Table";
 
 
-GetEntry :: ( table: *Table, key: u32 ) -> *GlyphEntry
+GetEntry :: ( table: *GlyphTable, key: u32 ) -> *GlyphEntry
 {
-    entry := table_find_pointer( table, key );
-    // All entries we look for should exist
-    assert( entry != null );
+    result: *GlyphEntry;
+    if key > 0
+    {
+        result = table_find_pointer( *table.entries, key );
+        // All entries we look for should exist
+        assert( result != null );
+    }
+    else
+    {
+        // Internally, key 0 retrieves the lru sentinel
+        result = *table.lruSentinel;
+    }
 
-    return entry;
+    return result;
 }
 
 #if 0
@@ -177,8 +187,8 @@ EvictLRU :: ( table: *GlyphTable ) -> GlyphSlot
     evictedKey := table.lruSentinel.lruPrev;
     assert( evictedKey != 0 );
 
-    entry := GetEntry( *table.entries, evictedKey );
-    prev := GetEntry( *table.entries, entry.lruPrev );
+    entry := GetEntry( table, evictedKey );
+    prev := GetEntry( table, entry.lruPrev );
 
     prev.lruNext = 0;
     table.lruSentinel.lruPrev = entry.lruPrev;

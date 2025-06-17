@@ -132,6 +132,7 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
 
     loadedFont: LoadedFont;
     loadedFont.face = face;
+    loadedFont.atlasSizeTexels = FONT_TEX_ATLAS_SIZE;
     loadedFont.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
     print( "Font line height is %\n", loadedFont.lineHeight );
 
@@ -166,8 +167,8 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
     // TODO Play with the various settings available in https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
     glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
 
-    glGenTextures( 1, *loadedFont.texture );
-    glBindTexture( GL_TEXTURE_2D, loadedFont.texture );
+    glGenTextures( 1, *loadedFont.textureHandle );
+    glBindTexture( GL_TEXTURE_2D, loadedFont.textureHandle );
     // TODO Should probably check pixel_mode in the bitmap
     glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
 
@@ -222,12 +223,12 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
                 //DumpGlyphBitmapData( face.glyph );
         }
 
-        g := *(loadedFont.glyphs[ it - 32 ]);
-        g.tile    = .{ x, y };
-        g.size    = .{ cast(s32) face.glyph.bitmap.width / 3, cast(s32) face.glyph.bitmap.rows };
-        g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
+        slot := *(loadedFont.directGlyphs[ it - 32 ]);
+        slot.* = .{ x, y };
+        // g.size    = .{ cast(s32) face.glyph.bitmap.width / 3, cast(s32) face.glyph.bitmap.rows };
+        // g.bearing = .{ face.glyph.bitmap_left, face.glyph.bitmap_top };
 
-        //print( "Loaded character %: %\n", it, loadedFont.glyphs[ it - 32 ] );
+        //print( "Loaded character %: %\n", it, loadedFont.directGlyphs[ it - 32 ] );
 
         x += 1;
         if x >= FONT_TEX_ATLAS_SIZE / loadedFont.advance
@@ -290,7 +291,7 @@ OpenGLRender :: ( state: *OpenGLState, font: LoadedFont, renderer: RendererState
     glUseProgram( state.gridShader.program );    
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
+    glBindTexture( GL_TEXTURE_2D, font.textureHandle );  // Bind handle to slot 0.
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
@@ -328,7 +329,7 @@ OpenGLRender :: ( state: *OpenGLState, font: LoadedFont, renderer: RendererState
 // Draw a text string with the given font by issuing a separate quad per glyph
 OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBase: float, font: LoadedFont )
 {
-    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, glyph: Glyph, font: LoadedFont, vertices: *[6] TextVertex )
+    DrawLetterQuad :: ( character: u8, xBase: float, yBase: float, slot: GlyphSlot, font: LoadedFont, vertices: *[6] TextVertex )
     {
         white :: Vector4.{ 1, 1, 1, 1 };
         red   :: Vector4.{ 1, 0, 0, 1 };
@@ -342,10 +343,10 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
         h := font.lineHeight;
 
         s := cast(float) FONT_TEX_ATLAS_SIZE;
-        u0 := glyph.tile.x * w / s;
-        v0 := glyph.tile.y * h / s;
-        u1 := (glyph.tile.x + 1) * w / s;
-        v1 := (glyph.tile.y + 1) * h / s;
+        u0 := slot.x * w / s;
+        v0 := slot.y * h / s;
+        u1 := (slot.x + 1) * w / s;
+        v1 := (slot.y + 1) * h / s;
 
         (<<vertices)[1] = .{ position = Vector3.{ x, y, 0 }, color = white, uv = .{ u0, v0 } };
         (<<vertices)[0] = .{ position = Vector3.{ x, y + h, 0 }, color = white, uv = .{ u0, v1 } };
@@ -370,14 +371,14 @@ OpenGLDrawTextWithFace :: ( state: *OpenGLState, text: string, xBase: float, yBa
     while c < text.data + text.count
     {
         // TODO Only works for ASCII
-        glyph := *font.glyphs[ <<c - 32 ];
-        glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
+        slot := font.directGlyphs[ <<c - 32 ];
+        glBindTexture( GL_TEXTURE_2D, font.textureHandle );  // Bind handle to slot 0.
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
         glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
-        DrawLetterQuad( <<c, xBase, yBase, <<glyph, font, *vertices );
+        DrawLetterQuad( <<c, xBase, yBase, slot, font, *vertices );
 
         glBindBuffer( GL_ARRAY_BUFFER, state.vertexBuffer );
         glBufferData( GL_ARRAY_BUFFER, vertices.count * size_of(TextVertex), vertices.data, GL_STREAM_DRAW );
@@ -396,11 +397,12 @@ OpenGLDrawAtlas :: ( state: *OpenGLState, font: LoadedFont )
     glUseProgram( state.testShader.program );    
     glUniform1i( state.testShader.glyphSamplerUni, 0 );
 
+     // FIXME This shouldnt scale with the window size
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_2D, font.texture );  // Bind handle to slot 0.
+    glBindTexture( GL_TEXTURE_2D, font.textureHandle );  // Bind handle to slot 0.
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
     glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );

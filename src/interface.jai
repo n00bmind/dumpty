@@ -54,9 +54,15 @@ RendererState :: struct
 
 Glyph :: struct
 {
-    tile:   v2s;
+    tile:    v2s;
     size:    v2s;
     bearing: v2s;
+}
+
+GlyphSlot :: struct
+{
+    // Tile coords into the atlas
+    x, y: u16;
 }
 
 GlyphProps :: struct
@@ -78,21 +84,19 @@ GlyphProps :: struct
     flags: Flags;
 }
 
-GlyphSlot :: struct
-{
-    // Tile coords into the atlas
-    x, y: u16;
-}
+// Writable ASCII (32..127) plus 1 slot for the cursor glyph
+ReservedSlotCount :: 128 - 32;
 
 LoadedFont :: struct
 {
-    face: *void;
-    glyphs     : [128-32] Glyph;
-    bbox       : v2s;
-    advance    : s32;
-    lineHeight : s32;
-    descender  : s32;   // Absolute value
-    texture    : u32;
+    face:            *void;
+    directGlyphs:    [ReservedSlotCount] GlyphSlot;
+    bbox:            v2s;
+    advance:         s32;
+    lineHeight:      s32;
+    descender:       s32;        // Absolute value
+    atlasSizeTexels: s32;
+    textureHandle:   u32;
 }
 
 
