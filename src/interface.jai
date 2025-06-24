@@ -49,6 +49,8 @@ RendererState :: struct
     }
     using constants : Constants;
     firstRowY: s32;
+
+    debugDrawAtlas: bool;
 }
 
 

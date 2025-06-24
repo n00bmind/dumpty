@@ -148,17 +148,6 @@ main :: ()
                             quit = true;
                         //if it.key_code == .ESCAPE
                         //quit = true;
-
-                        case .BACKSPACE;
-                        case .ENTER;
-                        case .PAGE_UP;
-                        case .PAGE_DOWN;
-                        case .ARROW_UP;
-                        case .ARROW_DOWN;
-                        //
-
-                        case;
-                        continue;
                     }
                 }
 
@@ -176,8 +165,6 @@ main :: ()
 
         UpdateAndRender( appInput, *appMemory, *renderer );
 
-        // TODO Put this under some key
-        // OpenGLDrawAtlas( *glState, loadedFont );
         // OpenGLDrawTextWithFace( *glState, "H3llo w0rld!", 100, 100, loadedFont );
         OpenGLRender( *glState, loadedFont, renderer );
 
@@ -186,19 +173,22 @@ main :: ()
         reset_temporary_storage();
 
         frameCount += 1;
-        // TODO Non-release
-        now := seconds_since_init();
-        if now > lastTitleUpdateTimestamp + 0.5
-        {
-            elapsedSecs := (now - lastTitleUpdateTimestamp);
-            avgPerFrame := elapsedSecs / frameCount;
-            text, success, lenBytes :=
-                utf8_to_wide( tprint( "% frames in %s. Avg. %ms. (% fps)\0", frameCount, elapsedSecs,
-                                      formatFloat( avgPerFrame * 1000, -1, 3 ), formatFloat( 1 / avgPerFrame, -1, 2 ) ) );
-            SetWindowTextW( mainWindow, text );
 
-            lastTitleUpdateTimestamp = now;
-            frameCount = 0;
+        #if BUILD_CONFIG != .Release
+        {
+            now := seconds_since_init();
+            if now > lastTitleUpdateTimestamp + 0.5
+            {
+                elapsedSecs := (now - lastTitleUpdateTimestamp);
+                avgPerFrame := elapsedSecs / frameCount;
+                text, success, lenBytes :=
+                    utf8_to_wide( tprint( "% frames in %s. Avg. %ms. (% fps)\0", frameCount, elapsedSecs,
+                                        formatFloat( avgPerFrame * 1000, -1, 3 ), formatFloat( 1 / avgPerFrame, -1, 2 ) ) );
+                SetWindowTextW( mainWindow, text );
+
+                lastTitleUpdateTimestamp = now;
+                frameCount = 0;
+            }
         }
     }
 

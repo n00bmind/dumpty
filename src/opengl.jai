@@ -283,6 +283,15 @@ USE_TEXTURE_BUFFER :: true;
 
 OpenGLRender :: ( state: *OpenGLState, font: LoadedFont, renderer: RendererState )
 {
+    #if BUILD_CONFIG != .Release
+    {
+        if renderer.debugDrawAtlas
+        {
+            OpenGLDrawAtlas( state, font );
+            return;
+        }
+    }
+
     // TODO scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     fbWidth := state.windowWidth; // * io.DisplayFramebufferScale.x);
     fbHeight := state.windowHeight; // * io.DisplayFramebufferScale.y);
@@ -397,7 +406,7 @@ OpenGLDrawAtlas :: ( state: *OpenGLState, font: LoadedFont )
     glUseProgram( state.testShader.program );    
     glUniform1i( state.testShader.glyphSamplerUni, 0 );
 
-     // FIXME This shouldnt scale with the window size
+    // TODO Would be nice to be able to pan & zoom here
     projection := orthographic_projection_matrix( 0, state.windowWidth, state.windowHeight, 0, 0, 1 );
     glUniformMatrix4fv( state.testShader.projectionUni, 1, GL_TRUE, *projection._11 );
 

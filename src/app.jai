@@ -98,6 +98,11 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                     cmdline.input.count = 0;
                 }
+
+                case .F10;
+                {
+                    renderer.debugDrawAtlas = !renderer.debugDrawAtlas;
+                }
             }
 
             case .TEXT_INPUT;
