@@ -1,13 +1,11 @@
 
 - Continuous redrawing while resizing window
 
-- Regarding how to do unicode, glyph caching etc., go rewatch the refterm lecture videos & the Twitch recordings on the HD backups folder
-  https://youtu.be/lStYLF6Us_Q?si=DePSfG7pN5iezxRc
-
 - Does it make sense to integrate something like TUI (https://github.com/ggerganov/imtui) for settings etc?
 
 - Add a "non-unicode" mode using CP437 .. https://cp437.github.io/
   Eventually support Blinkenlights .. https://github.com/jart/blink
 
+- Improve Unicode support, with proper segmenting & shaping. Try out https://github.com/JimmyLefevre/kb
 - Cool "acid test" for unicode support in various fonts .. https://justine.lol/dox/unicode.html
 

@@ -242,6 +242,7 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
     return loadedFont, true;
 }
 
+// TODO This should support rasterizing to multiple tiles for proper Unicode support
 PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bool
 {
     face := cast(FT_Face) font.face;

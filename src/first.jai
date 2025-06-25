@@ -163,6 +163,9 @@ main :: ()
         glState.windowWidth = cast(float)windowWidth;  
         glState.windowHeight = cast(float)windowHeight;
 
+        // TODO Check out the Remap_Context module and see if we need to do something like that
+        // or maybe simply pass along our own prepared Context perhaps?
+        // https://discord.com/channels/661732390355337246/1057205060876128278/1381758854236475459
         UpdateAndRender( appInput, *appMemory, *renderer );
 
         // OpenGLDrawTextWithFace( *glState, "H3llo w0rld!", 100, 100, loadedFont );
