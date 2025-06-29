@@ -64,7 +64,7 @@ Glyph :: struct
 GlyphSlot :: struct
 {
     // Tile coords into the atlas
-    x, y: u16;
+    x, y: s16;
 }
 
 GlyphProps :: struct

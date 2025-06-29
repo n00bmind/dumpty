@@ -109,7 +109,7 @@ FT_LOAD_TARGET_LCD :: (cast(s32)FT_Render_Mode.FT_RENDER_MODE_LCD & 15) << 16;
     
 
 // Loads a font from disk using Freetype and creates an atlas for it
-OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> LoadedFont, bool
+OpenGLLoadFont :: ( path: string, fontHeight: s32, ft: *FT_Library ) -> LoadedFont, bool
 {
     fontData, success := read_entire_file( path );
     if !success
@@ -127,31 +127,31 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
         return .{}, false;
     }
 
-    error = FT_Set_Pixel_Sizes( face, 0, xx fontHeightPixels );
+    // error = FT_Set_Pixel_Sizes( face, 0, xx fontHeight );
+    // TODO Figure out actual dpi of the current monitor
+    error = FT_Set_Char_Size( face, 0, fontHeight * 64, 96, 96 );
     assert(!error);
 
     loadedFont: LoadedFont;
     loadedFont.face = face;
     loadedFont.atlasSizeTexels = FONT_TEX_ATLAS_SIZE;
-    loadedFont.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
-    print( "Font line height is %\n", loadedFont.lineHeight );
 
-    // Get font advance from first glyph
-    error = FT_Load_Char( face, 0, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
-    if error
-    {
-        print( "Failed to load first glyph for estimating advance\n" );
-        assert( false );
-    }
-    // FIXME Since FT only provides an integer value, this becomes quite imprecise at small sizes.
+    loadedFont.lineHeight = cast(s32)(face.size.metrics.height / 64.0);
+    print( "Font line height: %\n", loadedFont.lineHeight );
+
+    // FIXME This may become quite imprecise at small sizes?
     // In a way we're doing our own grid fitting. Investigate what the best practice is here..
     // TODO Try to find and test non-integer sizes and see how the shader responds
-    loadedFont.advance = cast(s32) Round( face.glyph.advance.x / 64.0 );
-    print( "Font advance is % (rounded from %)\n", loadedFont.advance, face.glyph.advance.x / 64.0 );
+    maxAdvance := FT_MulFix( face.max_advance_width, face.size.metrics.x_scale ) / 64.0;
+    loadedFont.advance = cast(s32) Round( maxAdvance );
+    print( "Font max advance: % (rounded to %)\n", maxAdvance, loadedFont.advance );
+
+    // Not grid-fitted.. but still rounded!?
+    print( "Font metrics max_advance: %\n", face.size.metrics.max_advance / 64.0 );
 
     // TODO Apparently relying on the ascender / descender is.. unreliable .. see https://freetype.org/freetype2/docs/tutorial/step2.html
     loadedFont.descender = abs( cast(s32)(face.size.metrics.descender / 64.0) );
-    print( "Font descender is %\n", loadedFont.descender );
+    print( "Font descender: %\n", loadedFont.descender );
     // NOTE Using the bbox for the atlas is technically correct as that guarantees to provide enough space for all the font's glyphs
     // However in the simple grid shader we're using, we need glyphs in the atlas to be rendered in the same grid they'll be placed into in the final image
     // This is mostly unimportant when dealing with ASCII only, but it will become more relevant when we support unicode
@@ -159,6 +159,18 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
     pixels_h := FT_MulFix( (face.bbox.yMax - face.bbox.yMin), face.size.metrics.y_scale ) / 64.0;
     print( "Font bbox: % x %\n", pixels_w, pixels_h );
     loadedFont.bbox = .{ xx ceil( pixels_w ), xx ceil( pixels_h ) };
+
+    // Get some metrics from first glyph
+    error = FT_Load_Char( face, 0, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
+    if error
+    {
+        print( "Failed to load first glyph for estimating advance\n" );
+        assert( false );
+    }
+    print( "First glyph advance: %\n", face.glyph.advance.x / 64.0 );
+    print( "First glyph linearHoriAdvance: %\n", face.glyph.linearHoriAdvance / 65536.0 );
+    print( "First glyph metrics horiAdvance: %\n", face.glyph.metrics.horiAdvance / 64.0 );
+    print( "First glyph metrics bounds: %, %\n", face.glyph.metrics.width / 64.0, face.glyph.metrics.height / 64.0 );
 
 
     // TODO This must be 1 when doing 1-byte per pixel font textures
@@ -173,9 +185,8 @@ OpenGLLoadFont :: ( path: string, fontHeightPixels: int, ft: *FT_Library ) -> Lo
     glTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, FONT_TEX_ATLAS_SIZE, FONT_TEX_ATLAS_SIZE, 0, GL_RGB, GL_UNSIGNED_BYTE, null );
 
     // Load glyphs for ASCII
-    // FIXME At size 15 with consolas.ttf, the 'W' gets cut on the right side!
-    x, y: u16 = 0;
-    // TODO lineHeight may be still too much.. maybe use the font's pixel height?
+    // FIXME At pixel size 15 with consolas.ttf (and smaller), the 'W' gets cut on the right side!
+    x, y: s16 = 0;
     W, H := loadedFont.advance, loadedFont.lineHeight;
     for 32..127
     {
@@ -248,6 +259,7 @@ PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bo
     face := cast(FT_Face) font.face;
 
     // Enable subpixel rendering (3 separate alpha components per pixel)
+    // TODO Make a setting that adds support for grayscale AA as some people seem to hate sub-pixel due to the colour fringing
     error := FT_Load_Char( face, codepoint, FT_LOAD_RENDER | FT_LOAD_TARGET_LCD );
     if error
         return false;
@@ -268,8 +280,10 @@ PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bo
     }
 
     advance := cast(s32) Round( face.glyph.advance.x / 64.0 );
-    // TODO There are glyphs with a bigger pitch than their reported advance, so what's the deal with those?
-    // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads. Check U, V, W at small sizes
+    // TODO There are (non-complex?) glyphs with a bigger pitch than their reported advance, so what's the deal with those?
+    // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads, due to some glyphs being cut
+    // Check glyphs for U, V, W at small sizes
+    // TODO Could this have anything to do with font weights?
     assert( advance == font.advance, "Font has non-uniform advance" );
 
     return true;

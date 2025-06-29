@@ -617,14 +617,14 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
                     {
                         char := commandString[ col - cmdLineStartPos ];
                         slot := *font.directGlyphs[ char - 32 ];
-                        dst.glyphIndex = cast(u32)((slot.y << 16) | slot.x);
+                        dst.glyphIndex = PackGlyphIndex( slot );
                         continue;
                     }
                     // FIXME Actual cursor pos
                     else if col >= cmdLineStartPos && col == cmdLineStartPos + commandString.count
                     {
                         slot := *font.directGlyphs[127 - 32];
-                        dst.glyphIndex = cast(u32)((slot.y << 16) | slot.x);
+                        dst.glyphIndex = PackGlyphIndex( slot );
                         dst.props.flags |= .Blinking;
                         continue;
                     }
@@ -682,7 +682,7 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
                     slot = *font.directGlyphs[127 - 32];
                 }
             }
-            dst.glyphIndex = cast(u32)((slot.y << 16) | slot.x);
+            dst.glyphIndex = PackGlyphIndex( slot );
 
             dst += 1;
         }
@@ -724,12 +724,12 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     // Current commandline contents
     ComputeRenderedGlyphs( commandString, *cursor, glyphTable, renderer );
 
-    // TODO Actual moveable cursor
+    // TODO Actual moveable cursor?
     cell := GetCellAt( cursor, renderer );
     if cell
     {
         slot := *renderer.loadedFont.directGlyphs[127 - 32];
-        cell.glyphIndex = cast(u32)((slot.y << 16) | slot.x);
+        cell.glyphIndex = PackGlyphIndex( slot );
         cell.props = cursor.props;
         cell.props.flags |= .Blinking;
     }
@@ -803,7 +803,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
                             ConsumeCount( *range, advance );
                         }
 
-                        cell.glyphIndex = cast(u32)((slot.y << 16) | slot.x);
+                        cell.glyphIndex = PackGlyphIndex( slot );
                         cell.props.foregroundColor = cursor.props.foregroundColor;
                         cell.props.backgroundColor = cursor.props.backgroundColor;
                         cell.props.flags = cursor.props.flags;

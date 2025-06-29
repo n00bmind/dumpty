@@ -50,8 +50,8 @@ InitGlyphCache :: ( using table: *GlyphTable, firstFreeSlotIdx: s32, freeSlotCou
     freeSlots = NewArray( freeSlotCount, GlyphSlot );
 
     slot: GlyphSlot;
-    slot.y = cast(u16)(firstFreeSlotIdx / slotsPerRow);
-    slot.x = cast(u16)(firstFreeSlotIdx % slotsPerRow);
+    slot.y = cast(s16)(firstFreeSlotIdx / slotsPerRow);
+    slot.x = cast(s16)(firstFreeSlotIdx % slotsPerRow);
 
     for i: 0 .. freeSlotCount - 1
     {

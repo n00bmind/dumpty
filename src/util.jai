@@ -21,3 +21,19 @@ pop :: ( array: *[..] $T, count: int = 1 )
     assert( array.count > 0 );
     array.count -= count;
 }
+
+
+
+PackGlyphIndex :: ( x: int, y: int ) -> u32
+{
+    assert( x >= 0 && x < U16_MAX && "Slot x coordinate out of range" );
+    assert( y >= 0 && y < U16_MAX && "Slot y coordinate out of range" );
+
+    result: u32 = (cast(u32)y << 16) | cast(u32)x;
+    return result;
+}
+
+PackGlyphIndex :: ( slot: GlyphSlot ) -> u32
+{
+    return PackGlyphIndex( slot.x, slot.y );
+}
