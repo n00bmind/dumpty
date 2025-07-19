@@ -166,6 +166,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     blink := (nowMs / BlinkTimeMillis) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
+     // TODO Figure out if we were woken up by the timer last time
+     // and dont re-layout the view in that case
     #if false
     {
         UpdateRendererCells( renderer, appState.sourceBuffer, appState.lineOffset, <<cmdline );
@@ -546,7 +548,8 @@ Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
 
     slotsPerRow := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.advance;
     rowCount := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.lineHeight;
-    freeSlotCount := rowCount * slotsPerRow - ReservedSlotCount;
+    // freeSlotCount := rowCount * slotsPerRow - ReservedSlotCount;
+    freeSlotCount :s32 = 2;
     InitGlyphCache( *appState.glyphTable, ReservedSlotCount, freeSlotCount, slotsPerRow );
 
     Init( *appState.shellProcess );

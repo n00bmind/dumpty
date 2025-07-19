@@ -92,11 +92,13 @@ ReservedSlotCount :: 128 - 32;
 LoadedFont :: struct
 {
     face:            *void;
+    stagingBitmap:   [..] u8;
     directGlyphs:    [ReservedSlotCount] GlyphSlot;
     bbox:            v2s;
     advance:         s32;
     lineHeight:      s32;
     descender:       s32;        // Absolute value
+    bitmapPitch:     s32;
     atlasSizeTexels: s32;
     textureHandle:   u32;
 }

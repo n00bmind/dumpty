@@ -70,7 +70,7 @@ main :: ()
     // TODO Do we want to embed a Nerdfont for the fancy airline-like chars?
     // loadedFont, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16, *ft );
     // TODO Expand %WINDIR%
-    loadedFont, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf", 11, *ft );
+    loadedFont, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf", 15, *ft );
     // TODO Embed a small unicode fallback font as well?
     // https://unifoundry.com/unifont/index.html
     // https://github.com/unicode-org/last-resort-font?tab=readme-ov-file

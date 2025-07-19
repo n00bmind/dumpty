@@ -55,6 +55,7 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     //glEnable( GL_BLEND );
     //glBlendEquation( GL_FUNC_ADD );
     //glBlendFunc( GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA );
+    glDisable( GL_BLEND );
     glDisable( GL_CULL_FACE );
     glDisable( GL_DEPTH_TEST );
 
@@ -72,13 +73,13 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 }
 
 
-DumpGlyphBitmapData :: ( buffer: *u8, width: u32, height: u32 )
+DumpGlyphBitmapData :: ( buffer: *u8, pitch: s32, height: s32 )
 {
     for y: 0..height - 1
     {
-        for x: 0..width - 1
+        for x: 0..pitch - 1
         {
-            v := buffer[ y * width + x ];
+            v := buffer[ y * pitch + x ];
             if v == 0
                 print( " .  " );
             else
@@ -86,7 +87,7 @@ DumpGlyphBitmapData :: ( buffer: *u8, width: u32, height: u32 )
         }
         print( "\n" );
     }
-    exit( 0 );
+    print( "\n" );
 }
 
 DumpGlyphBitmapData :: ( glyph: FT_GlyphSlot )
@@ -97,7 +98,7 @@ DumpGlyphBitmapData :: ( glyph: FT_GlyphSlot )
     print( "Height %\n", glyph.bitmap.rows );
     print( "Bearing X %\n", glyph.bitmap_left );
     print( "Bearing Y %\n", glyph.bitmap_top );
-    DumpGlyphBitmapData( glyph.bitmap.buffer, xx glyph.bitmap.pitch, glyph.bitmap.rows );
+    DumpGlyphBitmapData( glyph.bitmap.buffer, xx glyph.bitmap.pitch, xx glyph.bitmap.rows );
 }
 
 FONT_TEX_ATLAS_SIZE :: 1024;
@@ -179,6 +180,12 @@ OpenGLLoadFont :: ( path: string, fontHeight: s32, ft: *FT_Library ) -> LoadedFo
     // TODO Play with the various settings available in https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
     glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
 
+    // NOTE GL_UNPACK_ALIGNMENT of 4 seems to suit FT's subpixel-rendered bitmaps
+    // (even though I dont think I've seen this specified anywhere), so align up to that
+    loadedFont.bitmapPitch = cast(s32) AlignUp( loadedFont.advance * 3, 4 );
+    cellPitch := loadedFont.bitmapPitch;
+    array_resize( *loadedFont.stagingBitmap, cellPitch * loadedFont.lineHeight );
+
     glGenTextures( 1, *loadedFont.textureHandle );
     glBindTexture( GL_TEXTURE_2D, loadedFont.textureHandle );
     // TODO Should probably check pixel_mode in the bitmap
@@ -193,12 +200,7 @@ OpenGLLoadFont :: ( path: string, fontHeight: s32, ft: *FT_Library ) -> LoadedFo
         if it == 127
         {
             // Special-case last glyph to use as cursor 
-            buffer: [..] u8;
-            buffer.allocator = temp;
-            // GL_UNPACK_ALIGNMENT of 4 seems to suit FT's subpixel-rendered bitmaps, so this one needs to respect that too
-            // See the description for 'pitch' in https://freetype.org/freetype2/docs/reference/ft2-basic_types.html#ft_bitmap
-            pitch := AlignUp( loadedFont.advance * 3, 4 );
-            array_resize( *buffer, pitch * loadedFont.lineHeight );
+            buffer := loadedFont.stagingBitmap;
 
             for j: 0..loadedFont.lineHeight - 1
             {
@@ -209,29 +211,28 @@ OpenGLLoadFont :: ( path: string, fontHeight: s32, ft: *FT_Library ) -> LoadedFo
                     //atBorder := (j == loadedFont.lineHeight - 1);
                     //atBorder := (i == 0 || i == 1);
                     atBorder := true;
-                    buffer[j * pitch + i*3 + 0] = xx ifx atBorder then 0xFF else 0;
-                    buffer[j * pitch + i*3 + 1] = xx ifx atBorder then 0xFF else 0;
-                    buffer[j * pitch + i*3 + 2] = xx ifx atBorder then 0xFF else 0;
+                    buffer[j * cellPitch + i*3 + 0] = xx ifx atBorder then 0xFF else 0;
+                    buffer[j * cellPitch + i*3 + 1] = xx ifx atBorder then 0xFF else 0;
+                    buffer[j * cellPitch + i*3 + 2] = xx ifx atBorder then 0xFF else 0;
                 }
             }
 
-            glTexSubImage2D( GL_TEXTURE_2D, 0, x * W, y * H, xx W, xx H, GL_RGB, GL_UNSIGNED_BYTE, buffer.data );
+            glTexSubImage2D( GL_TEXTURE_2D, 0,
+                             x * W, y * H, xx W, xx H,
+                             GL_RGB, GL_UNSIGNED_BYTE, buffer.data );
 
-            //DumpGlyphBitmapData( buffer.data, xx pitch, xx loadedFont.lineHeight );
+            //DumpGlyphBitmapData( buffer.data, xx cellPitch, xx loadedFont.lineHeight );
         }
         else
         {
             slot := GlyphSlot.{ x, y };
 
-            ok := PrepareGlyphTiles( cast(u32) it, slot, loadedFont );
+            ok := PrepareGlyphTiles( cast(u32) it, slot, *loadedFont );
             if !ok
             {
                 print( "Failed to load glyph for ASCII %\n", it );
                 return .{}, false;
             }
-
-            //if it == 87
-                //DumpGlyphBitmapData( face.glyph );
         }
 
         slot := *(loadedFont.directGlyphs[ it - 32 ]);
@@ -253,8 +254,62 @@ OpenGLLoadFont :: ( path: string, fontHeight: s32, ft: *FT_Library ) -> LoadedFo
     return loadedFont, true;
 }
 
+
+BlitGlyphBitmap :: ( glyph: FT_GlyphSlot, font: *LoadedFont )
+{
+    bitmapOut := font.stagingBitmap.data;
+
+    // Clear out the target
+    cellPitch := font.bitmapPitch;
+    cellHeight := cast(s32) font.lineHeight; 
+    assert( cellPitch * cellHeight == font.stagingBitmap.count );
+    memset( bitmapOut, 0, font.stagingBitmap.count );
+
+    glyphPitch := cast(s32) glyph.bitmap.pitch;
+    // NOTE FT docs incorrectly report the 'width' field as being the width in pixels
+    glyphWidth := cast(s32) glyph.bitmap.width;
+    glyphWidthPixels := glyphWidth / 3;
+    assert( glyphWidthPixels * 3 == glyphWidth, "Glyph width % not multiple of 3", glyphWidth );
+    glyphHeight := cast(s32) glyph.bitmap.rows;
+
+    baseline := font.lineHeight - font.descender;
+    cellYOffset := baseline - glyph.bitmap_top;
+
+    // TODO Some glyphs have a negative value here! 
+    // Decide what the hell we want to do here, as we obvs cannot start rendering on the
+    // previous cell! I imagine what one would ideally do is apply this offset in the shader
+    // at the last minute, while copying from the texture atlas to the screen?
+    // An idea would be to add a few pixels of margin to each atlas cell, then correct for
+    // the bitmap left/top offsets while rendering..
+    if false // face.glyph.bitmap_left < 0
+    {
+        print( "\nGlyph index % has negative horizontal displacement:\n", glyph.glyph_index );
+        print( "bitmap_left: %\n", glyph.bitmap_left );
+        print( "metrics.horiBearingX: %\n", glyph.metrics.horiBearingX );
+    }
+    // TODO For now, reposition at the left cell border
+    bitmapLeftBytes := cast(s32) max( glyph.bitmap_left, 0 ) * 3;
+
+    srcPrev := cast(*u8)glyph.bitmap.buffer;
+    dstPrev := bitmapOut;
+    for y: 0 .. glyphHeight - 1
+    {
+        src := cast(*u8)glyph.bitmap.buffer + y * glyphPitch;
+        dst := bitmapOut + (y + cellYOffset) * cellPitch + bitmapLeftBytes;
+
+        // NOTE We assume that the ordering of the 3 subpixel components is the correct
+        // order for our target texture, although I havent seen this specified?
+        // NOTE Only copy the bytes specified by the width, since the remaining bytes
+        // up to the pitch are just there for alignment purposes, as far as I understand!
+        memcpy( dst, src, glyphWidth );
+    
+        srcPrev = src;
+        dstPrev = dst;
+    }
+}
+
 // TODO This should support rasterizing to multiple tiles for proper Unicode support
-PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bool
+PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: *LoadedFont ) -> bool
 {
     face := cast(FT_Face) font.face;
 
@@ -265,26 +320,64 @@ PrepareGlyphTiles :: ( codepoint: u32, slot: GlyphSlot, font: LoadedFont ) -> bo
         return false;
 
     W, H := font.advance, font.lineHeight;
-    baseline := font.lineHeight - font.descender;
-
-    // NOTE FT docs incorrectly report this field as being the width in pixels
-    pixelWidth := face.glyph.bitmap.width / 3;
-    assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
-    pixelHeight := face.glyph.bitmap.rows;
-
-    // Some chars are just empty
-    // if pixelWidth && pixelHeight
-    {
-        glTexSubImage2D( GL_TEXTURE_2D, 0, slot.x * W + face.glyph.bitmap_left, slot.y * H + baseline - face.glyph.bitmap_top,
-                         pixelWidth, pixelHeight, GL_RGB, GL_UNSIGNED_BYTE, face.glyph.bitmap.buffer );
-    }
 
     advance := cast(s32) Round( face.glyph.advance.x / 64.0 );
-    // TODO There are (non-complex?) glyphs with a bigger pitch than their reported advance, so what's the deal with those?
+    // TODO There are (non-complex) glyphs with a bigger pitch than their reported advance, so what's the deal with those?
     // FIXME Some chromas are wrong, meaning we must not be rendering the complete subpixel triads, due to some glyphs being cut
     // Check glyphs for U, V, W at small sizes
     // TODO Could this have anything to do with font weights?
     assert( advance == font.advance, "Font has non-uniform advance" );
+
+    //if it == 87
+        // DumpGlyphBitmapData( face.glyph );
+
+    // TODO A/B test the hell out of this with a huge zoom to ensure the results are identical!
+    // FIXME Still clearly not out of the weeds yet. Check '_' at size 11..
+    #if false
+    {
+        baseline := font.lineHeight - font.descender;
+        // NOTE FT docs incorrectly report this field as being the width in pixels
+        pixelWidth := face.glyph.bitmap.width / 3;
+        assert( pixelWidth * 3 == face.glyph.bitmap.width, "Glyph width % not multiple of 3", face.glyph.bitmap.width );
+        pixelHeight := face.glyph.bitmap.rows;
+
+        // TODO Some glyphs have a negative value here! 
+        // Decide what the hell we want to do here, as we obvs cannot start rendering on the
+        // previous cell! I imagine what one would ideally do is apply this offset in the shader
+        // at the last minute, while copying from the texture atlas to the screen?
+        // An idea would be to add a few pixels of margin to each atlas cell, then correct for
+        // the bitmap left/top offsets while rendering..
+        if false // face.glyph.bitmap_left < 0
+        {
+            print( "\nGlyph for codepoint % has negative horizontal displacement:\n", codepoint );
+            print( "bitmap_left: %\n", face.glyph.bitmap_left );
+            print( "metrics.horiBearingX: %\n", face.glyph.metrics.horiBearingX );
+        }
+        bitmapLeft := max( face.glyph.bitmap_left, 0 );
+
+
+        // TODO This is positioning the glyph correctly even though we are NOT transferring
+        // the correct number of bytes according to the glyph pitch !???
+        glTexSubImage2D( GL_TEXTURE_2D, 0,
+                         slot.x * W + bitmapLeft,
+                         slot.y * H + baseline - face.glyph.bitmap_top,
+                         pixelWidth, pixelHeight, GL_RGB, GL_UNSIGNED_BYTE,
+                         face.glyph.bitmap.buffer );
+    }
+    else
+    {
+        // Manually blit the glyph pixels to a (cleared) cell bitmap
+        BlitGlyphBitmap( face.glyph, font );
+
+        // Upload to full cell to the atlas, so we fully overwrite anything that was
+        // previously occupying the slot
+        glTexSubImage2D( GL_TEXTURE_2D, 0,
+                         slot.x * W, slot.y * H,
+                         xx W, xx H, GL_RGB, GL_UNSIGNED_BYTE,
+                         font.stagingBitmap.data );
+
+        // DumpGlyphBitmapData( font.stagingBitmap.data, W * 3, H );
+    }
 
     return true;
 }
@@ -618,6 +711,7 @@ CreateAndCompileShader :: ( shaderType : GLenum, shaderString: string, prefix: s
 
 BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
+    // TODO Move this to the file and set up hot reloading!
 GRID_SHADER :: #string END
 
 #ifdef VERTEX_SHADER
@@ -720,6 +814,12 @@ void main ()
     ivec2 cellPos = ivec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
 
     vec3 result;
+    // TODO Pass flags in constants to toggle drawing cell bounds
+    // if( cellPos.x == 0 || cellPos.y == 0 )
+    // {
+    //     result = vec3( 0.8, 0, 0 );
+    // }
+    // else
     if( (gl_FragCoord.x >= topLeftMargin.x) &&
         (gl_FragCoord.y >= topLeftMargin.y) &&
         (cellIndex.x < cellCount.x) &&
