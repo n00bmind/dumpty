@@ -200,7 +200,7 @@ main :: ()
     FT_Done_Face( cast(FT_Face) renderer.loadedFont.face );
     FT_Done_FreeType( ft );
 
-    exit( 0 );
+    // exit( 0 );
 }
 
 

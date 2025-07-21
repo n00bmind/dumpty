@@ -11,7 +11,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         memory.initialized = true;
 
         appState := cast(*AppState) memory.appState;
-        ret := StartShell( *appState.shellProcess );
+        appState.shell = CreateShell();
+
+        ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
     }
 
@@ -67,7 +69,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     }
 
                 case .BACKSPACE;
-                    // WriteToProcess( *appState.shellProcess, "\x08" );
+                    // appState.shell.writeProc( appState.shell, "\x08" );
                     if cmdline.input.count > 0
                         pop( *cmdline.input );
 
@@ -89,10 +91,10 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     }
                     else
                     {
-                        // WriteToProcess( *appState.shellProcess, "\n" );
+                        // appState.shell.writeProc( appState.shell, "\n" );
                         //
                         push( *cmdline.input, "\n" );
-                        if !ExecuteShellCommand( *appState.shellProcess, cmdline.input )
+                        if !appState.shell.writeProc( appState.shell, xx cmdline.input )
                             AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
                     }
 
@@ -112,7 +114,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                 // The theoretical maximum for UTF8 is 6 bytes
                 str := alloc_string( 6 ,, temp );
                 character_utf32_to_utf8( value, *str );
-                // WriteToProcess( *appState.shellProcess, str );
+                // appState.shell.writeProc( appState.shell, str );
                 push( *cmdline.input, str );
                 
                 UpdateHistoryEntry( cmdline );
@@ -133,31 +135,45 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
     if IsRunning( appState.builtinProcess )
     {
-        alive, result := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
+        absStartP := appState.sourceBuffer.absoluteHeadPos;
+
+        result, totalBytes := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
+
+        if totalBytes > 0
+            ParseLines( *appState.sourceBuffer, absStartP, totalBytes );
+
         if result.type == .EXITED
         {
             if result.exit_code
                 print( "<<replr>> Builtin process exited with error code %.\n", result.exit_code );
             deinit( *appState.builtinProcess );
 
-            WriteToProcess( *appState.shellProcess, "\n" );
+            appState.shell.writeProc( appState.shell, "\n" );
         }
         else if result.type == .FAILED_TO_LAUNCH
         {
             print( "<<replr>> Builtin process failed to launch (%).\n", result.exit_code );
             deinit( *appState.builtinProcess );
 
-            WriteToProcess( *appState.shellProcess, "\n" );
+            appState.shell.writeProc( appState.shell, "\n" );
         }
     }
-    if IsRunning( appState.shellProcess )
+    // TODO Do we really need to call this at all?
+    // if IsRunning( appState.shell )
     {
-        alive, result := ReadProcessOutput( *appState.shellProcess, *appState.sourceBuffer );
-        if !alive
+        absStartP := appState.sourceBuffer.absoluteHeadPos;
+
+        result, totalBytes := appState.shell.readProc( appState.shell, *appState.sourceBuffer );
+
+        if totalBytes > 0
+            ParseLines( *appState.sourceBuffer, absStartP, totalBytes );
+
+        if result.type != .STILL_RUNNING
         {
             print( "Shell process died (%).\n", result );
-            Reset( *appState.shellProcess );
-            // TODO Restart
+
+            // TODO Restart? Exit app?
+            // Restart( *appState.shell );
             assert( false );
         }
     }
@@ -183,7 +199,7 @@ Shutdown :: ( memory: *AppMemory )
 {
     appState := cast(*AppState) memory.appState;
 
-    Shutdown( *appState.shellProcess );
+    appState.shell.shutdownProc( appState.shell );
     Shutdown( *appState.builtinProcess );
 }
 
@@ -191,6 +207,16 @@ Shutdown :: ( memory: *AppMemory )
 #scope_module
 
 #import "String";
+
+Shell :: struct
+{
+    // TODO Would like all these to take a concrete *subtype* of Shell instead, but unsure how to do this
+    startProc: #type ( shell: *Shell ) -> bool;
+    shutdownProc: #type ( base: *Shell );
+    writeProc: #type ( base: *Shell, str: string ) -> bool;
+    readProc: #type ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64;
+    getWaitableHandlesProc: #type ( base: *Shell, handles: [] HANDLE, handleCount: *u32 );
+}
 
 SourceBuffer :: struct
 {
@@ -221,6 +247,7 @@ SourceBuffer :: struct
 }
 #assert( IsPowerOfTwo( SourceBuffer.MaxSize ) );
 #assert( IsPowerOfTwo( SourceBuffer.MaxLines ) );
+
 
 GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [] u8
 {
@@ -269,6 +296,168 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
     buffer.absoluteHeadPos += data.count;
     if buffer.absoluteHeadPos >= buffer.bytes.count
         buffer.bytesFilled = true;
+}
+
+
+Reset :: ( process: *Process )
+{
+    deinit( process );
+    Init( process );
+}
+
+Init :: ( process: *Process )
+{
+    ini :: initializer_of(Process);
+    inline ini( process );
+
+    #if OS == .WINDOWS
+        process.info.hProcess = INVALID_HANDLE_VALUE;
+    else
+        assert( false, "Implement me" );
+}
+
+Shutdown :: ( process: *Process )
+{
+    if IsRunning( process.* )
+    {
+        kill_process( process );
+        deinit( process );
+    }
+}
+
+IsRunning :: ( process: Process ) -> bool
+{
+    #if OS == .WINDOWS
+        return process.info.hProcess != INVALID_HANDLE_VALUE;
+    else
+        assert( false, "Implement me" );
+}
+
+
+#scope_file
+
+#import "File";
+#import "Unicode";
+#import "Process";
+#import "System";
+#load "interface.jai";
+#load "util.jai";
+#load "shell_cmd.jai";
+#load "glyph_cache.jai";
+
+// TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling
+#import "Window_Creation";
+#load "opengl.jai";
+
+#if OS == .WINDOWS
+{
+    #import "Windows";
+
+    WAIT_ABANDONED_0 :: 0x00000080;
+
+    kernel32 :: #system_library "kernel32";
+    user32   :: #system_library "user32";
+    MsgWaitForMultipleObjects :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD ) -> DWORD #foreign user32;
+
+    QS_KEY            :: 0x0001;
+    QS_MOUSEMOVE      :: 0x0002;
+    QS_MOUSEBUTTON    :: 0x0004;
+    QS_MOUSE          :: (QS_MOUSEMOVE | QS_MOUSEBUTTON);
+    QS_POSTMESSAGE    :: 0x0008;
+    QS_TIMER          :: 0x0010;
+    QS_PAINT          :: 0x0020;
+    QS_SENDMESSAGE    :: 0x0040;
+    QS_HOTKEY         :: 0x0080;
+    QS_ALLPOSTMESSAGE :: 0x0100;
+    QS_RAWINPUT       :: 0x0400;
+    QS_TOUCH          :: 0x0800;
+    QS_POINTER        :: 0x1000;
+    QS_INPUT          :: (QS_MOUSE     | QS_KEY         | QS_RAWINPUT | QS_TOUCH | QS_POINTER);
+    QS_ALLEVENTS      :: (QS_INPUT     | QS_POSTMESSAGE | QS_TIMER    | QS_PAINT | QS_HOTKEY);
+    QS_ALLINPUT       :: (QS_ALLEVENTS | QS_SENDMESSAGE);
+}
+
+
+AppState :: struct
+{
+    mainArena: MemoryArena;
+
+    commandLine: CommandLine;
+    cursor: CursorState;
+
+    shell: *Shell;
+    builtinProcess: Process;
+
+    sourceBuffer: SourceBuffer;
+    lineOffset: s64;
+
+    glyphTable: GlyphTable;
+
+    lastInputSeconds: float64;
+}
+
+SourceBufferRange :: struct
+{
+    base: *u8;
+    absP: s64;
+    count: s64;
+}
+
+Line :: struct
+{
+    absStartPos: s64;
+    absOnePastEndPos: s64;
+    startingProps: GlyphProps;
+}
+
+CommandLine :: struct
+{
+    input: [..] u8;
+    history: CommandLineHistory;
+}
+
+CommandLineHistory :: struct
+{
+    MaxEntries :: 256;
+    EntriesMask :: MaxEntries - 1;
+    entries: [MaxEntries] [..] u8;
+
+    nextEntryAbsIdx: u32;
+    displayedAbsIdx: u32;  // If equal to nextEntry, no entry is displayed
+}
+
+CursorState :: struct
+{
+    x, y: s32;
+    props: GlyphProps;
+}
+
+
+Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
+{
+    // TODO Add support for commiting & decommiting as we go?
+    appState := BootstrapStructWithArena( AppState, offsetof( AppState, "mainArena" ), Gigabytes( 1 ) );
+    memory.appState = appState;
+
+    // TODO Should concat with exe path
+    //lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
+    //assert( success2 );
+    //lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
+    //assert( success3 );
+
+    Init( *appState.sourceBuffer );
+    //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
+
+    array_reserve( *appState.commandLine.input, 1024 );
+
+    slotsPerRow := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.advance;
+    rowCount := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.lineHeight;
+    freeSlotCount := rowCount * slotsPerRow - ReservedSlotCount;
+    InitGlyphCache( *appState.glyphTable, ReservedSlotCount, freeSlotCount, slotsPerRow );
+
+    Init( *appState.builtinProcess );
+
+    return appState;
 }
 
 ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
@@ -330,7 +519,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         {
             data := range.data;
             count := range.count;
-            // Ensure really long lines dont case too many issues
+            // Ensure really long lines dont cause too many issues
             // TODO There's an edge case here, where if a VT code straddles this artificial split, we should stop
             // parsing right at the point where the code starts and restart parsing there on the next ParseLines call
             // For that we'd need to introduce a 'parseHead' which we dont have rn..
@@ -422,90 +611,6 @@ NewLine :: ( absP: s64, buffer: *SourceBuffer )
     line.startingProps = buffer.runningCursor.props;
 }
 
-AppState :: struct
-{
-    mainArena: MemoryArena;
-
-    sourceBuffer: SourceBuffer;
-    lineOffset: s64;
-
-    commandLine: CommandLine;
-    cursor: CursorState;
-
-    shellProcess: Process;
-    builtinProcess: Process;
-
-    glyphTable: GlyphTable;
-
-    lastInputSeconds: float64;
-}
-
-CursorState :: struct
-{
-    x, y: s32;
-    props: GlyphProps;
-}
-
-Reset :: ( process: *Process )
-{
-    deinit( process );
-    Init( process );
-}
-
-IsRunning :: ( process: Process ) -> bool
-{
-    #if OS == .WINDOWS
-        return process.info.hProcess != INVALID_HANDLE_VALUE;
-    else
-        assert( false, "Implement me" );
-}
-
-#scope_file
-
-#import "File";
-#import "Unicode";
-#import "Process";
-#import "System";
-#load "interface.jai";
-#load "util.jai";
-#load "shell_cmd.jai";
-#load "glyph_cache.jai";
-
-// TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling
-#import "Window_Creation";
-#load "opengl.jai";
-
-
-SourceBufferRange :: struct
-{
-    base: *u8;
-    absP: s64;
-    count: s64;
-}
-
-Line :: struct
-{
-    absStartPos: s64;
-    absOnePastEndPos: s64;
-    startingProps: GlyphProps;
-}
-
-CommandLine :: struct
-{
-    input: [..] u8;
-    history: CommandLineHistory;
-}
-
-CommandLineHistory :: struct
-{
-    MaxEntries :: 256;
-    EntriesMask :: MaxEntries - 1;
-    entries: [MaxEntries] [..] u8;
-
-    nextEntryAbsIdx: u32;
-    displayedAbsIdx: u32;  // If equal to nextEntry, no entry is displayed
-}
-
 UpdateHistoryEntry :: ( using commandLine: *CommandLine )
 {
     array_copy( *history.entries[ history.nextEntryAbsIdx & history.EntriesMask ],
@@ -528,35 +633,6 @@ RetrieveHistoryEntry :: ( using cmdline: *CommandLine )
     array_copy( *input, src.* );
 }
 
-
-Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
-{
-    // TODO Add support for commiting & decommiting as we go?
-    appState := BootstrapStructWithArena( AppState, offsetof( AppState, "mainArena" ), Gigabytes( 1 ) );
-    memory.appState = appState;
-
-    // TODO Should concat with exe path
-    //lipsumData, success2 := read_entire_file( "data/lipsum.txt" );
-    //assert( success2 );
-    //lipsumWrappedData, success3 := read_entire_file( "data/lipsum_wrapped.txt" );
-    //assert( success3 );
-
-    Init( *appState.sourceBuffer );
-    //AppendToSourceBuffer( *appState.sourceBuffer, lipsumWrappedData );
-
-    array_reserve( *appState.commandLine.input, 1024 );
-
-    slotsPerRow := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.advance;
-    rowCount := renderer.loadedFont.atlasSizeTexels / renderer.loadedFont.lineHeight;
-    // freeSlotCount := rowCount * slotsPerRow - ReservedSlotCount;
-    freeSlotCount :s32 = 2;
-    InitGlyphCache( *appState.glyphTable, ReservedSlotCount, freeSlotCount, slotsPerRow );
-
-    Init( *appState.shellProcess );
-    Init( *appState.builtinProcess );
-
-    return appState;
-}
 
 DebugDrawLineBufferValues :: false;
 DebugLineValuesReservedCols :: 17;
@@ -1198,19 +1274,129 @@ GetCellAt :: ( cursor: CursorState, renderer: *RendererState ) -> *RendererCell
 }
 
 
-Init :: ( process: *Process )
+CreateShell :: () -> *Shell
 {
-    ini :: initializer_of(Process);
-    inline ini( process );
+    // TODO This would in principle return whatever shell was saved in the prefs etc
+    result := New( CmdShell );
+    return result;
+}
 
-    #if OS == .WINDOWS
-        process.info.hProcess = INVALID_HANDLE_VALUE;
+ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppState ) -> bool
+{
+    Reset( *appState.builtinProcess );
+
+    // Extract command
+    found, cmd, args := split_from_left( xx command, #char " " );
+
+    // TODO builtins table
+    if cmd == "#run"
+    {
+        cmdArgs := break_command_into_strings( args );
+        success := create_process( process, ..cmdArgs,
+                                   working_directory = get_working_directory(),
+                                   capture_and_return_output = true,
+                                   arg_quoting = Process_Argument_Quoting.NEVER_QUOTE );
+
+        // TODO Diagnostics
+        return success;
+    }
     else
-        assert( false, "Implement me" );
+    {
+        AppendToSourceBuffer( *appState.sourceBuffer, tprint( "<<replr>> Unknown builtin: %\n", cmd ) );
+        return true;
+    }
 }
 
-Shutdown :: ( process: *Process )
+ReadProcessOutput :: ( process: *Process, sourceBuffer: *SourceBuffer ) -> Process_Result, s64
 {
-    kill_process( process );
-    deinit( process );
+    success: bool;
+    outBytes, errBytes: s64;
+    if !process.output.eof
+    {
+        range := GetNextWriteableRange( sourceBuffer );
+
+        success, outBytes = read_pipe( *process.output, range );
+
+        if outBytes
+            CommitWrite( sourceBuffer, outBytes );
+    }
+    if !process.error.eof
+    {
+        range := GetNextWriteableRange( sourceBuffer );
+
+        success, errBytes = read_pipe( *process.error, range );
+
+        if errBytes
+            CommitWrite( sourceBuffer, errBytes );
+    }
+
+    totalBytes := outBytes + errBytes;
+
+    result: Process_Result = .{ type = .STILL_RUNNING };
+    // No more output, so check if it's been killed
+    if process.output.eof && process.error.eof
+    {
+        success, result = get_process_result( process );
+        if !success
+        {
+            error_code, error_string := get_error_value_and_string();
+            // TODO Diagnostics
+            //log_error( "Couldn’t get process result for command \"%\": % %", get_quoted_command_string(args), error_code, error_string );
+            kill_process( process );
+            result = .{type = .EXITED, exit_code = -1};
+        }
+    }
+
+    return result, totalBytes;
 }
+
+// timeoutMs == -1 means wait forever
+// timeoutMs == 0 means dont wait at all
+WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
+{
+#if OS == .WINDOWS
+{
+    handles: [4] HANDLE = ---;
+    handleCount: u32 = 0;
+
+    if IsRunning( appState.builtinProcess )
+    {
+        if !appState.builtinProcess.output.eof
+        {
+            handles[handleCount] = appState.builtinProcess.output.overlapped.hEvent;
+            handleCount += 1;
+        }
+        if !appState.builtinProcess.error.eof
+        {
+            handles[handleCount] = appState.builtinProcess.error.overlapped.hEvent;
+            handleCount += 1;
+        }
+    }
+
+    appState.shell.getWaitableHandlesProc( appState.shell, handles, *handleCount );
+
+    timeout := INFINITE;
+    if timeoutMs >= 0
+        timeout = cast(u32) timeoutMs;
+
+    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_ALLINPUT );
+
+    if result >= WAIT_ABANDONED_0 && result != WAIT_TIMEOUT
+    {
+        // TODO Logs / diagnotics
+        log_error("Unable to read command's output.\n");
+        return false;
+    }
+    // else
+    // {
+    //     print( "MsgWaitForMultipleObjects result: %\n", result );
+    // }
+}
+else
+{
+    #assert( false && "Implement me" );
+}
+    
+    return true;
+}
+
