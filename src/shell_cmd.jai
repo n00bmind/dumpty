@@ -11,6 +11,8 @@ CmdShell :: struct
 }
 
 
+#scope_file
+
 // TODO Investigate using Job Objects on windows (https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 // so that any child processes we create here are auto assigned to the same job object
 // Investigate whether that would cause any child processes to be killed when the parent process dies for whatever reason
@@ -130,5 +132,4 @@ CmdShellGetWaitableHandles :: ( base: *Shell, handles: [] HANDLE, handleCount: *
     }
 }
 
-#scope_file
 

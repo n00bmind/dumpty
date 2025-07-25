@@ -343,6 +343,7 @@ IsRunning :: ( process: Process ) -> bool
 #load "interface.jai";
 #load "util.jai";
 #load "shell_cmd.jai";
+#load "shell_cmd_pty.jai";
 #load "glyph_cache.jai";
 
 // TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling
