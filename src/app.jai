@@ -11,7 +11,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         memory.initialized = true;
 
         appState := cast(*AppState) memory.appState;
-        appState.shell = CreateShell();
+        // appState.shell = CreateShell();
+        appState.shell = New( CmdPtyShell );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -93,6 +94,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                     {
                         // appState.shell.writeProc( appState.shell, "\n" );
                         //
+                        // TODO nested WSL doesnt like this. We probably need to somehow listen to input/output console mode changes..
+                        // Either that or we're gonna need to customize this per shell as well..
+                        push( *cmdline.input, "\r" );
                         push( *cmdline.input, "\n" );
                         if !appState.shell.writeProc( appState.shell, xx cmdline.input )
                             AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
@@ -211,7 +215,7 @@ Shutdown :: ( memory: *AppMemory )
 Shell :: struct
 {
     // TODO Would like all these to take a concrete *subtype* of Shell instead, but unsure how to do this
-    startProc: #type ( shell: *Shell ) -> bool;
+    startProc: #type ( base: *Shell ) -> bool;
     shutdownProc: #type ( base: *Shell );
     writeProc: #type ( base: *Shell, str: string ) -> bool;
     readProc: #type ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64;
@@ -1282,6 +1286,12 @@ CreateShell :: () -> *Shell
     return result;
 }
 
+Restart :: ( shell: *Shell ) -> bool
+{
+    shell.shutdownProc( shell );
+    return shell.startProc( shell );
+}
+
 ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppState ) -> bool
 {
     Reset( *appState.builtinProcess );
@@ -1357,6 +1367,10 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
 {
 #if OS == .WINDOWS
 {
+    timeout := INFINITE;
+    if timeoutMs >= 0
+        timeout = cast(u32) timeoutMs;
+
     handles: [4] HANDLE = ---;
     handleCount: u32 = 0;
 
@@ -1374,11 +1388,13 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
         }
     }
 
-    appState.shell.getWaitableHandlesProc( appState.shell, handles, *handleCount );
-
-    timeout := INFINITE;
-    if timeoutMs >= 0
-        timeout = cast(u32) timeoutMs;
+    if appState.shell.getWaitableHandlesProc
+        appState.shell.getWaitableHandlesProc( appState.shell, handles, *handleCount );
+    else
+    {
+        // If the shell doesnt provide waitable handles, assume we're gonna be doing constant polling on its pipes
+        timeout = 0;
+    }
 
     result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_ALLINPUT );
 

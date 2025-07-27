@@ -7,6 +7,7 @@
 .session.vim
 bin/*
 !bin/data
+!bin/tools
 
 *.rdbg
 /data/huge
