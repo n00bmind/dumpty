@@ -36,25 +36,11 @@ CmdShellStart :: ( base: *Shell ) -> bool
     return true;
 }
 
-Restart :: ( base: *Shell ) -> bool
-{
-    shell: *CmdShell = xx base;
-
-    deinit( *shell.process );
-    return CmdShellStart( shell );
-}
-
 CmdShellShutdown :: ( base: *Shell )
 {
     shell: *CmdShell = xx base;
     if IsRunning( shell.process )
         Shutdown( *shell.process );
-}
-
-IsRunning :: ( base: *Shell ) -> bool
-{
-    shell: *CmdShell = xx base;
-    return IsRunning( shell.process );
 }
 
 

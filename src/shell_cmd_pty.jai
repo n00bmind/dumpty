@@ -2,13 +2,22 @@ CmdPtyShell :: struct
 {
     #as using base: Shell;
     base.startProc              = CmdPtyShellStart;
-    // base.shutdownProc           = CmdShellShutdown;
-    // base.writeProc              = CmdShellWrite;
-    // base.readProc               = CmdShellRead;
+    base.shutdownProc           = CmdPtyShellShutdown;
+    base.writeProc              = CmdPtyShellWrite;
+    base.readProc               = CmdPtyShellRead;
+    // TODO Overlapped pipes?
+    // https://github.com/microsoft/terminal/pull/17510
+    // https://github.com/microsoft/terminal/pull/17510/files/d3ee58b9fce08b50b1d307ebc012850966ef6b24..cc31a596699d5f1133eec822746b956f0218a5cb#diff-4c3ba54e8baad8805f981e9e919b632ce7656cd152586a1a3974227b866362db
+    // https://github.com/PKRoma/Terminal/commit/d68c6a5e7a8059678828e2c68f7b94f9736b36b5
+    // https://github.com/andfoy/winpty-rs/pull/96
+    // https://github.com/Microsoft/Terminal/issues/262
+
     // base.getWaitableHandlesProc = CmdShellGetWaitableHandles;
 
+    processInfo: PROCESS_INFORMATION;
     consoleHandle: HPCON;
     inHandle, outHandle: HANDLE;
+    eof: bool;
 }
 
 
@@ -24,17 +33,21 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
 
     // TODO Last param is "the size of the buffer for the pipe, in bytes"
     // Play with it a little, maybe?
+    // TODO modules/Process/windows.jai claims that named pipes cannot be used with WaitFor..
+    // however refterm seems to be doing that just fine?
     if( !CreatePipe( *inReadEnd, *shell.inHandle, NULL, 0 ) )
     {
         log_error( "Failed creating input pipe: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
+    defer CloseHandle( inReadEnd );
 
     if( !CreatePipe( *shell.outHandle, *outWriteEnd, NULL, 0 ) )
     {
         log_error( "Failed creating output pipe: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
+    defer CloseHandle( outWriteEnd );
 
      // TODO Pass a settings arg to this function with the current character size
      // TODO This will need to be redimensioned using ResizePseudoConsole.
@@ -52,17 +65,17 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
     si.StartupInfo.cb = size_of(STARTUPINFOEXA);
 
     // Discover the size required for the list
-    bytesRequired: u64;;
-    res := InitializeProcThreadAttributeList( NULL, 1, 0, *bytesRequired );
-    assert( res && "Failed getting size of thread attribute list" );
+    bytesRequired: SIZE_T;
+    InitializeProcThreadAttributeList( NULL, 1, 0, *bytesRequired );
 
     si.lpAttributeList = cast(*PROC_THREAD_ATTRIBUTE_LIST) alloc( xx bytesRequired );
     assert( si.lpAttributeList && "Failed allocating attribute list" );
 
+    defer free( si.lpAttributeList );
+
     // Initialize the list memory location
     if( !InitializeProcThreadAttributeList( si.lpAttributeList, 1, 0, *bytesRequired ) )
     {
-        free( si.lpAttributeList );
         log_error( "Failed initialising attribute list: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
@@ -76,34 +89,126 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
     // However this is supposed to be a pointer and the size of the stuff it points to !?
                                     shell.consoleHandle, size_of(HPCON), NULL, NULL ) )
     {
-        free( si.lpAttributeList );
         log_error( "Failed initialising attribute list: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
 
 
-    pi: PROCESS_INFORMATION;
-    memset( *pi, 0, size_of(PROCESS_INFORMATION) );
+    memset( *shell.processInfo, 0, size_of(PROCESS_INFORMATION) );
      // TODO Shouldnt we use %WINDOWS% here or whatever that env var is?
      // TODO We can pass an initial dir here in 'lpCurrentDirectory'
     if( !CreateProcessA( "C:\\windows\\system32\\cmd.exe", NULL, NULL, NULL,
                          .FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
-                         *si.StartupInfo, *pi ) )
+                         *si.StartupInfo, *shell.processInfo ) )
     {
          // TODO So we dont free si.lpAttributeList here!?
         log_error( "Failed creating 'cmd' process: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
 
-     // TODO After shell process is running (or failure)
-     // TODO Should add these (and any frees required above) to the defer list
-    free( si.lpAttributeList );
-
-    // We can now close the pipe handles that we dont manage
-    CloseHandle( inReadEnd );
-    CloseHandle( outWriteEnd );
-
     return true;
+}
+
+CmdPtyShellShutdown :: ( base: *Shell )
+{
+    shell: *CmdPtyShell = xx base;
+
+    CloseHandle( shell.inHandle );
+    CloseHandle( shell.outHandle );
+
+    CloseHandle( shell.consoleHandle );
+}
+
+
+CmdPtyShellWrite :: ( base: *Shell, str: string ) -> bool
+{
+    shell: *CmdPtyShell = xx base;
+
+    // result, bytesWritten := write_to_process( *shell.process, xx str );
+    bytesWritten: u32 = ---;
+    result := WriteFile( shell.inHandle, str.data, cast(u32) str.count, *bytesWritten, null );
+
+    assert( result && bytesWritten == str.count, "Couldn't write full string" );
+    return cast(bool) result;
+}
+
+ReadPipe :: ( shell: *CmdPtyShell, buffer: [] u8 ) -> success: bool, bytesRead: int
+{
+    bytesRead: u32;
+    bytesAvailable: u32;
+
+    success := PeekNamedPipe( shell.outHandle, null, 0, null, *bytesAvailable, null ) != 0;
+    if success && bytesAvailable
+    {
+        success = ReadFile( shell.outHandle, buffer.data, cast(u32) buffer.count, *bytesRead, null ) != 0;
+        // if success {
+        //     success = issue_read(pipe);
+        // }
+    }
+
+    if !success
+    {
+        // We can read some bytes even if BROKEN_PIPE, so return those.
+        if GetLastError() == ERROR_BROKEN_PIPE
+            shell.eof = true;
+        else
+            return false, 0;
+    }
+
+    return true, bytesRead;
+}
+
+CmdPtyShellRead :: ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64
+{
+    shell: *CmdPtyShell = xx base;
+
+    success: bool;
+    outBytes, errBytes: s64;
+    if !shell.eof
+    {
+        range := GetNextWriteableRange( sourceBuffer );
+
+        // TODO Get some stats going for how many bytes per sec. the pipe is actually filling here
+        // TODO Try to figure out a way to easily determine whether the bottleneck is the shell or our parsing
+        success, outBytes = ReadPipe( shell, range );
+
+        if outBytes
+            CommitWrite( sourceBuffer, outBytes );
+    }
+    // if !shell.process.error.eof
+    // {
+    //     range := GetNextWriteableRange( sourceBuffer );
+    //
+    //     success, errBytes = ReadPipe( *shell.process.error, range );
+    //
+    //     if errBytes
+    //         CommitWrite( sourceBuffer, errBytes );
+    // }
+
+    totalBytes := outBytes + errBytes;
+
+    // TODO 
+    result: Process_Result = .{ type = .STILL_RUNNING };
+    // No more output, so check if it's been killed
+    #if false // shell.eof //&& shell.process.error.eof
+    {
+        success, result = get_process_result( *shell.process );
+        if !success
+        {
+            error_code, error_string := get_error_value_and_string();
+            // TODO Diagnostics
+            //log_error( "Couldn’t get process result for command \"%\": % %", get_quoted_command_string(args), error_code, error_string );
+            kill_process( *shell.process );
+            result = .{type = .EXITED, exit_code = -1};
+        }
+    }
+
+    return result, totalBytes;
+}
+
+CmdPtyShellGetWaitableHandles :: ( base: *Shell, handles: [] HANDLE, handleCount: *u32 )
+{
+
 }
 
 
