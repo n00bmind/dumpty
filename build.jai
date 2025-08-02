@@ -3,6 +3,7 @@
 #import "System";
 #import "String";
 #import "File";
+#import "File_Utilities";
 
 #load "src/interface.jai";
 
@@ -71,6 +72,22 @@ build :: ()
 
         add_build_file( "src/first.jai", w );
         add_build_string( configStr, w );
+    }
+
+    // Test programs
+    {
+        visitor :: ( info: *File_Visit_Info, user_data: *Build_Options )
+        {
+            w := compiler_create_workspace();
+            options := user_data.*;
+            options.output_type = .EXECUTABLE;
+            options.output_executable_name = path_strip_extension( info.short_name );
+            set_build_options( options, w );
+
+            add_build_file( tprint( "src/tests/%", info.short_name ), w );
+            // add_build_string( configStr, w );
+        }
+        visit_files( "src/tests", recursive = false, *global_options, visitor, follow_directory_symlinks = false );
     }
 
     // Test data
