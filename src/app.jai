@@ -506,6 +506,8 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
         range: [] u8 = .{ sizeBytes, *buffer.bytes[ relStartPos ] };
+        log( "Ingesting % bytes:\n%\n", sizeBytes, range );
+
         // TODO Test artificial line splitting a bit more (see below)
         SplitLineAtCount :: 4096;
         // SplitLineAtCount :: 32;
@@ -573,7 +575,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                 // we could start parsing in the middle of some VT code that affects the props, then split a new line right
                 // after, and we'll have failed to determine the correct glyphs props to start the line with!?
                 // TODO Prepare some kind of test case for this, seems like another argument for an independent 'parseHead'
-                escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor );
+                escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor, absP );
                 if escape
                 {
                     if cursorJumped
@@ -587,8 +589,8 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                         NewLine( absP + 1, buffer );
                     }
                 }
-
             }
+
             // If the current line has gotten too long, split it now
             absP := absStartPos + sizeBytes - range.count;
             if absP - GetCurLine( buffer ).absStartPos >= SplitLineAtCount
@@ -900,10 +902,34 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
     }
 }
 
-TryParseEscapeCode :: ( range: *$Range, cursor: *CursorState ) -> success: bool, movedCursor: bool
+globalECLocations: Table( s64, bool );
+
+TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) -> success: bool, movedCursor: bool
 {
+    startRange := range;
+    parsed := false;
+
+    if PeekToken( range.*, 0 ) != #char "\x1b" 
+        return false, false;
+
+    defer
+    {
+        if !parsed 
+        {
+            range = startRange;
+
+            #if BUILD_CONFIG != .Release && RangeT != SourceBufferRange
+                if absP != -1 && !table_contains( *globalECLocations, absP )
+                {
+                    log( "Unknown EC starting at %: %..\n", absP,
+                         GetContiguousView( startRange.*, 8 ) );
+                    table_add( *globalECLocations, absP, true );
+                }
+        }
+    }
+
     // TODO Some sequences dont start with '['
-    if PeekToken( range.*, 0 ) != #char "\x1b" || PeekToken( range.*, 1 ) != #char "["
+    if PeekToken( range.*, 1 ) != #char "["
         return false, false;
 
     ConsumeCount( range, 2 );
@@ -982,6 +1008,7 @@ TryParseEscapeCode :: ( range: *$Range, cursor: *CursorState ) -> success: bool,
             return false, false;
     }
 
+    parsed = true;
     return true, movedCursor;
 }
 
@@ -1161,10 +1188,7 @@ ConsumeCount :: ( range: *SourceBufferRange, count: s64 )
 
 GetContiguousView :: ( range: [] u8, count: s64 ) -> [] u8
 {
-    if count > range.count
-        count = range.count;
-
-    return .{ count, range.data };
+    return .{ Min( count, range.count ), range.data };
 }
 
 // Returns a temp copy if the SourceBufferRange cannot fit 'count' contiguous bytes
