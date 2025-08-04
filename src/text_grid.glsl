@@ -115,7 +115,8 @@ void main ()
         vec3 foreground = ColorToLinear( UnpackColor( cell.foregroundColor ) );
 
         vec3 blink = UnpackColor( blinkModulateColor );
-        if( (cell.flags & 1u) != 0u ) foreground *= blink;
+        // TODO Magic numbers
+        if( (cell.flags & 0x10u) != 0u ) foreground *= blink;
         //if((cell.foreground >> 25) & 1) foreground *= 0.5;
 
         // Blend using (subpixel) alpha values with each color component

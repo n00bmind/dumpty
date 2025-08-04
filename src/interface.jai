@@ -71,11 +71,11 @@ GlyphProps :: struct
 {
     Flags :: enum_flags u32
     {
-        Blinking;
         Bold;
         Dim;
         Italic;
         Underline;
+        Blinking;
         ReverseVideo;
         Invisible;
         Strikethrough;

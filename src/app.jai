@@ -12,7 +12,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
         appState := cast(*AppState) memory.appState;
         // appState.shell = CreateShell();
-        appState.shell = New( CmdPtyShell );
+        appState.shell = New( CmdShell );
+        // appState.shell = New( CmdPtyShell );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -902,27 +903,46 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
     }
 }
 
+// TODO Colour palettes .. https://iterm2colorschemes.com/
+// TODO Bright / dim variants
+globalPalette: [] v3 =
+.[
+    .{ 0,    0,    0 },    // Black
+    .{ 0.5,  0,    0 },    // Red
+    .{ 0,    0.5,  0 },    // Green
+    .{ 0.5,  0.5,  0 },    // Yellow
+    .{ 0,    0,    0.5 },  // Blue
+    .{ 0.5,  0,    0.5 },  // Magenta
+    .{ 0,    0.5,  0.5 },  // Cyan
+    .{ 0.75, 0.75, 0.75 }, // White
+    .{ 0,    0,    0 },    // Default (index 8 isnt in the spec)
+    // TODO Default varies for FG vs BG
+    .{ 0,    0,    0 },    // Default
+];
+
 globalECLocations: Table( s64, bool );
 
+// TODO Try adapting https://github.com/haberman/vtparse for a more complete version of this
 TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) -> success: bool, movedCursor: bool
 {
-    startRange := range;
-    parsed := false;
-
+    // TODO We wouldnt even want to make the call into here if this doesnt hold
     if PeekToken( range.*, 0 ) != #char "\x1b" 
         return false, false;
+
+    startRange := range.*;
+    parsed := false;
 
     defer
     {
         if !parsed 
         {
-            range = startRange;
+            range.* = startRange;
 
             #if BUILD_CONFIG != .Release && RangeT != SourceBufferRange
                 if absP != -1 && !table_contains( *globalECLocations, absP )
                 {
                     log( "Unknown EC starting at %: %..\n", absP,
-                         GetContiguousView( startRange.*, 8 ) );
+                         GetContiguousView( startRange, 8 ) );
                     table_add( *globalECLocations, absP, true );
                 }
         }
@@ -935,15 +955,16 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
     ConsumeCount( range, 2 );
 
     command: u8;
-    params: [..] u64;
-    params.allocator = temp;
+    params: [8] u64;
 
+    paramCount := 0;
     while range.count > 0
     {
         token := PeekToken( range.*, 0 );
-        if IsDigit( token )
+        if IsDigit( token ) && paramCount < params.count
         {
-            array_add( *params, ParseUnsignedInt( range ) );
+            params[ paramCount ] = ParseUnsignedInt( range );
+            paramCount += 1;
             
             if PeekToken( range.*, 0 ) == #char ";"
                 ConsumeCount( range, 1 );
@@ -960,6 +981,7 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
     {
         case #char "H";
         {
+            // TODO Doesnt this support default coords?
             if params.count != 2
                 return false, false;
 
@@ -969,39 +991,90 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
         }
         case #char "m";
         {
-            if params.count < 1
-                return false, false;
-
-            if params[0] ==
+            // TODO Apparently no args should be interpreted as '0' (clear props)?
+            if paramCount == 0
             {
-                case 0; ClearProps( *cursor.props );
+                params[0] = 0;
+                paramCount += 1;
+            }
 
-                case 1; cursor.props.flags |= .Bold;
-                case 2; cursor.props.flags |= .Dim;
-                case 3; cursor.props.flags |= .Italic;
-                case 4; cursor.props.flags |= .Underline;
-                case 5; cursor.props.flags |= .Blinking;
-                case 7; cursor.props.flags |= .ReverseVideo;
-                case 8; cursor.props.flags |= .Invisible;
-                case 9; cursor.props.flags |= .Strikethrough;
-
-                case 38;
+            p := params.data;
+            pEnd := params.data + paramCount;
+            while p < pEnd 
+            {
+                if p[0] ==
                 {
-                    if params[1] == 2
-                        cursor.props.foregroundColor = PackColor( xx params[2], xx params[3], xx params[4] );
-                    else
-                        return false, false;
-                }
-                case 48;
-                {
-                    if params[1] == 2
-                        cursor.props.backgroundColor = PackColor( xx params[2], xx params[3], xx params[4] );
-                    else
-                        return false, false;
+                    case 0; ClearProps( *cursor.props );
+
+                    // TODO Implement all these
+                    case 1; cursor.props.flags |= .Bold;
+                    case 2; cursor.props.flags |= .Dim;
+                    case 3; cursor.props.flags |= .Italic;
+                    case 4; cursor.props.flags |= .Underline;
+                    case 5; cursor.props.flags |= .Blinking;
+                    case 7; cursor.props.flags |= .ReverseVideo;
+                    case 8; cursor.props.flags |= .Invisible;
+                    case 9; cursor.props.flags |= .Strikethrough;
+
+                    case 22; cursor.props.flags &= ~(.Bold | .Dim);
+                    case 23; cursor.props.flags &= ~.Italic;
+                    case 24; cursor.props.flags &= ~.Underline;
+                    case 25; cursor.props.flags &= ~.Blinking;
+                    case 27; cursor.props.flags &= ~.ReverseVideo;
+                    case 28; cursor.props.flags &= ~.Invisible;
+                    case 29; cursor.props.flags &= ~.Strikethrough;
+
+                    case 30; #through;
+                    case 31; #through;
+                    case 32; #through;
+                    case 33; #through;
+                    case 34; #through;
+                    case 35; #through;
+                    case 36; #through;
+                    case 37; #through;
+                    case 39;
+                        cursor.props.foregroundColor = PackColor( globalPalette[ p[0] - 30 ] );
+
+                    case 40; #through;
+                    case 41; #through;
+                    case 42; #through;
+                    case 43; #through;
+                    case 44; #through;
+                    case 45; #through;
+                    case 46; #through;
+                    case 47; #through;
+                    case 49;
+                        cursor.props.backgroundColor = PackColor( globalPalette[ p[0] - 40 ] );
+
+                    case 38;
+                    {
+                        if p[1] == 2
+                        {
+                            cursor.props.foregroundColor = PackColor( xx p[2], xx p[3], xx p[4] );
+                            p += 4;
+                        }
+                        else
+                            return false, false;
+                    }
+                    case 48;
+                    {
+                        if p[1] == 2
+                        {
+                            cursor.props.backgroundColor = PackColor( xx p[2], xx p[3], xx p[4] );
+                            p += 4;
+                        }
+                        else
+                            return false, false;
+                    }
+
+                    case;
+                         // TODO Should we just ignore (+log) instead?
+                        if !parsed
+                            return false, false;
                 }
 
-                case;
-                    return false, false;
+                p += 1;
+                parsed = true;
             }
         }
         case;
@@ -1009,7 +1082,7 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
     }
 
     parsed = true;
-    return true, movedCursor;
+    return parsed, movedCursor;
 }
 
 
