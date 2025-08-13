@@ -26,6 +26,12 @@ AppMemory :: struct
 }
 
 
+CursorState :: struct
+{
+    x, y: s32;
+    props: GlyphProps;
+}
+
 RendererCell :: struct
 {
     glyphIndex: u32;
@@ -36,6 +42,8 @@ RendererState :: struct
 {
     cells : [] RendererCell;
     loadedFont: *LoadedFont;
+    palette: *[256] c3;
+    savedCursor: CursorState;
 
     // NOTE This mirrors the ConstantsBlock in the GridShader
     Constants :: struct

@@ -9,3 +9,4 @@
 - Improve Unicode support, with proper segmenting & shaping. Try out https://github.com/JimmyLefevre/kb
 - Cool "acid test" for unicode support in various fonts .. https://justine.lol/dox/unicode.html
 
+- Readline emulation? https://www.bigsmoke.us/readline/shortcuts

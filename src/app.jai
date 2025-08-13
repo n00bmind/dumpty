@@ -12,8 +12,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
         appState := cast(*AppState) memory.appState;
         // appState.shell = CreateShell();
-        appState.shell = New( CmdShell );
-        // appState.shell = New( CmdPtyShell );
+        // appState.shell = New( CmdShell );
+        appState.shell = New( CmdPtyShell );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -87,9 +87,16 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
 
                     if begins_with( xx cmdline.input, "#" )
                     {
-                        AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) cmdline.input ) );
-                        if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input, appState )
-                            AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing builtin command\n" );
+                        AppendToSourceBuffer( *appState.sourceBuffer,
+                                              tprint( "%\n", cast(string) cmdline.input ),
+                                              renderer );
+                        if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input,
+                                                   appState, renderer )
+                        {
+                            AppendToSourceBuffer( *appState.sourceBuffer,
+                                                  "<<replr>> Internal error executing builtin command\n",
+                                                  renderer );
+                        }
                     }
                     else
                     {
@@ -100,7 +107,9 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                         push( *cmdline.input, "\r" );
                         push( *cmdline.input, "\n" );
                         if !appState.shell.writeProc( appState.shell, xx cmdline.input )
-                            AppendToSourceBuffer( *appState.sourceBuffer, "<<replr>> Internal error executing shell command\n" );
+                            AppendToSourceBuffer( *appState.sourceBuffer,
+                                                  "<<replr>> Internal error executing shell command\n",
+                                                  renderer );
                     }
 
                     cmdline.input.count = 0;
@@ -145,7 +154,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         result, totalBytes := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
 
         if totalBytes > 0
-            ParseLines( *appState.sourceBuffer, absStartP, totalBytes );
+            ParseLines( *appState.sourceBuffer, absStartP, totalBytes, renderer );
 
         if result.type == .EXITED
         {
@@ -171,7 +180,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         result, totalBytes := appState.shell.readProc( appState.shell, *appState.sourceBuffer );
 
         if totalBytes > 0
-            ParseLines( *appState.sourceBuffer, absStartP, totalBytes );
+            ParseLines( *appState.sourceBuffer, absStartP, totalBytes, renderer );
 
         if result.type != .STILL_RUNNING
         {
@@ -276,7 +285,7 @@ CommitWrite :: ( buffer: *SourceBuffer, count: s64 )
         buffer.bytesFilled = true;
 }
 
-AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
+AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string, renderer: *RendererState )
 {
     assert( data.count <= buffer.bytes.count );
 
@@ -287,15 +296,16 @@ AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string )
     if( data.count < available )
     {
         memcpy( buffer.bytes.data + relPos, data.data, data.count );
-        ParseLines( buffer, buffer.absoluteHeadPos, data.count );
+        ParseLines( buffer, buffer.absoluteHeadPos, data.count, renderer );
     }
     else
     {
         memcpy( buffer.bytes.data + relPos, data.data, available );
         memcpy( buffer.bytes.data, data.data + available, data.count - available );
 
-        ParseLines( buffer, buffer.absoluteHeadPos, available );
-        ParseLines( buffer, buffer.absoluteHeadPos + available, data.count - available );
+        ParseLines( buffer, buffer.absoluteHeadPos, available, renderer );
+        ParseLines( buffer, buffer.absoluteHeadPos + available, data.count - available,
+                    renderer );
     }
 
     buffer.absoluteHeadPos += data.count;
@@ -432,12 +442,6 @@ CommandLineHistory :: struct
     displayedAbsIdx: u32;  // If equal to nextEntry, no entry is displayed
 }
 
-CursorState :: struct
-{
-    x, y: s32;
-    props: GlyphProps;
-}
-
 
 Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
 {
@@ -463,10 +467,13 @@ Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
 
     Init( *appState.builtinProcess );
 
+    renderer.palette = *DefaultPalette;
+
     return appState;
 }
 
-ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
+ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64,
+                renderer: *RendererState )
 {
     #if false
     {
@@ -576,9 +583,11 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64 )
                 // we could start parsing in the middle of some VT code that affects the props, then split a new line right
                 // after, and we'll have failed to determine the correct glyphs props to start the line with!?
                 // TODO Prepare some kind of test case for this, seems like another argument for an independent 'parseHead'
-                escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor, absP );
+                // TODO Do we need to create a faster / lighter version of this that's only concerned with cursor props?
+                escape, cursorJumped := TryParseEscapeCode( *range, *buffer.runningCursor, renderer, absP );
                 if escape
                 {
+                    // TODO This doesnt really *require* us to break the line does it?
                     if cursorJumped
                         NewLine( absP, buffer );
                 }
@@ -651,8 +660,8 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
     LineValuesColOffset :: #ifx DebugDrawLineBufferValues then DebugLineValuesReservedCols else 0;
 
     font := renderer.loadedFont;
-    fg := PackColor( .{ 1, 1, 1 } );
-    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+    fg := PackColor( v3.{ 1, 1, 1 } );
+    bg := PackColor( v3.{ 0.15, 0.15, 0.2 } );
 
     commandString := commandLine.input;
 
@@ -685,7 +694,7 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
                 {
                     char := GetLineBufferCharAt( <<line, col );
                     dst.glyphIndex = GlyphIndexForChar( char, font );
-                    dst.props.foregroundColor = PackColor( .{ 0.5, 0.5, 0.5 } );
+                    dst.props.foregroundColor = PackColor( v3.{ 0.5, 0.5, 0.5 } );
                     continue;
                 }
 
@@ -855,8 +864,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
             {
                 // TODO Refterm wants to reposition the prompt line when the cursor jumps here
                 // but our prompt is controlled by the shell, so I doubt we can do anything about that..
-                // TODO Do we need to enable VT code support through some Win32 crap to receive VT codes from Windows apps?
-                escape, cursorJumped := TryParseEscapeCode( *range, cursor );
+                escape, cursorJumped := TryParseEscapeCode( *range, cursor, renderer, -1 );
                 if !escape
                 {
                     cell := GetCellAt( cursor.*, renderer );
@@ -903,27 +911,72 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
     }
 }
 
+// As seen on Wikipedia..
 // TODO Colour palettes .. https://iterm2colorschemes.com/
-// TODO Bright / dim variants
-globalPalette: [] v3 =
+BuildDefaultPalette :: () -> string
+{
+    builder: String_Builder;
+
+    append( *builder, ".[\n" );
+    for c: 0..15
+        print_to_builder( *builder, "    DefaultSystemColours[ % ],\n", c );
+    // Colors 16-231 are a 6x6x6 color cube
+    for r: 0..5
+    {
+        for g: 0..5
+        {
+            for b: 0..5
+            {
+                print_to_builder( *builder, "    .{ %, %, % },\n",
+                                  ifx r then r * 40 + 55 else 0,
+                                  ifx g then g * 40 + 55 else 0,
+                                  ifx b then b * 40 + 55 else 0 );
+            }
+        }
+    }
+    // Colors 232-255 are a grayscale ramp, intentionally leaving out black and white
+    for c: 0..23
+    {
+        gr := c * 10 + 8;
+        print_to_builder( *builder, "    .{ %, %, % },\n", gr, gr, gr );
+    }
+    append( *builder, "];\n" );
+
+    return builder_to_string( *builder );
+}
+
+DefaultPalette : [256] c3 : #insert #run BuildDefaultPalette();
+DefaultSystemColours : [16] c3 :
 .[
-    .{ 0,    0,    0 },    // Black
-    .{ 0.5,  0,    0 },    // Red
-    .{ 0,    0.5,  0 },    // Green
-    .{ 0.5,  0.5,  0 },    // Yellow
-    .{ 0,    0,    0.5 },  // Blue
-    .{ 0.5,  0,    0.5 },  // Magenta
-    .{ 0,    0.5,  0.5 },  // Cyan
-    .{ 0.75, 0.75, 0.75 }, // White
-    .{ 0,    0,    0 },    // Default (index 8 isnt in the spec)
-    // TODO Default varies for FG vs BG
-    .{ 0,    0,    0 },    // Default
+    .{ 0,    0,    0    }, // black
+    .{ 0x80, 0,    0    }, // red
+    .{ 0,    0x80, 0    }, // green
+    .{ 0x80, 0x80, 0    }, // yellow
+    .{ 0,    0,    0x80 }, // blue
+    .{ 0x80, 0,    0x80 }, // magenta
+    .{ 0,    0x80, 0x80 }, // cyan
+    .{ 0xc0, 0xc0, 0xc0 }, // white
+
+    .{ 0x80, 0x80, 0x80 }, // black
+    .{ 0xff, 0,    0    }, // red
+    .{ 0,    0xff, 0    }, // green
+    .{ 0xff, 0xff, 0    }, // yellow
+    .{ 0,    0,    0xff }, // blue
+    .{ 0xff, 0,    0xff }, // magenta
+    .{ 0,    0xff, 0xff }, // cyan
+    .{ 0xff, 0xff, 0xff }, // white
 ];
+
 
 globalECLocations: Table( s64, bool );
 
-// TODO Try adapting https://github.com/haberman/vtparse for a more complete version of this
-TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) -> success: bool, movedCursor: bool
+// TODO Do we want to make 2 versions of this to speed up ingestion?
+// https://learn.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences
+// https://www.xfree86.org/4.8.0/ctlseqs.html
+// https://en.wikipedia.org/wiki/ANSI_escape_code
+// https://ghostty.org/docs/vt/concepts/sequences
+TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *RendererState, absP: s64 = -1 )
+    -> success: bool, movedCursor: bool
 {
     // TODO We wouldnt even want to make the call into here if this doesnt hold
     if PeekToken( range.*, 0 ) != #char "\x1b" 
@@ -936,6 +989,7 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
     {
         if !parsed 
         {
+            // TODO In non-debug we probably dont wanna backtrack at all and just eat them up
             range.* = startRange;
 
             #if BUILD_CONFIG != .Release && RangeT != SourceBufferRange
@@ -948,22 +1002,24 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
         }
     }
 
-    // TODO Some sequences dont start with '['
-    if PeekToken( range.*, 1 ) != #char "["
-        return false, false;
+    ConsumeCount( range, 1 );
+    if PeekToken( range.*, 0 ) == #char "["
+        // TODO Flag this?
+        ConsumeCount( range, 1 );
 
-    ConsumeCount( range, 2 );
 
     command: u8;
-    params: [8] u64;
+    params: [8] s32;
 
     paramCount := 0;
     while range.count > 0
     {
         token := PeekToken( range.*, 0 );
-        if IsDigit( token ) && paramCount < params.count
+        // NOTE Some codes accept symbol params here (screen / private modes)
+        if IsDigitOrKnownSymbol( token ) && paramCount < params.count
         {
-            params[ paramCount ] = ParseUnsignedInt( range );
+            params[ paramCount ]
+                = ifx IsDigit( token ) ParseInt( range ) else ConsumeToken( range );
             paramCount += 1;
             
             if PeekToken( range.*, 0 ) == #char ";"
@@ -979,16 +1035,123 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
     movedCursor := false;
     if command ==
     {
-        case #char "H";
+        //// Cursor movement
+        // TODO Wrapping for all these?
+        case #char "H"; #through;
+        case #char "f";
         {
-            // TODO Doesnt this support default coords?
-            if params.count != 2
-                return false, false;
-
-            cursor.x = cast(s32) (params[1] - 1);
-            cursor.y = cast(s32) (params[0] - 1);
+            cursor.x = ifx params.count then (params[1] - 1) else 0;
+            cursor.y = ifx params.count then (params[0] - 1) else 0;
             movedCursor = true;
         }
+        case #char "A";
+            cursor.y -= ifx params.count then params[0] else 1;
+            movedCursor = true;
+        case #char "B";
+            cursor.y += ifx params.count then params[0] else 1;
+            movedCursor = true;
+        // TODO Do we care about breaking the line for the ones that only change the col?
+        case #char "C";
+            cursor.x += ifx params.count then params[0] else 1;
+        case #char "D";
+            cursor.x -= ifx params.count then params[0] else 1;
+        case #char "E";
+        {
+            cursor.x = 0;
+            cursor.y += ifx params.count then params[0] else 1;
+            movedCursor = true;
+        }
+        case #char "F";
+        {
+            cursor.x = 0;
+            cursor.y -= ifx params.count then params[0] else 1;
+            movedCursor = true;
+        }
+        case #char "G";
+            cursor.x = ifx params.count then (params[1] - 1) else 0;
+        case #char "n";
+        {
+            // if params[0] == #char "6"
+            // TODO This is supposed to write the current cursor pos as 'ESC[#;#R'
+        }
+        case #char "M";   // NOTE No CSI
+        {
+            cursor.y -= 1;
+            movedCursor = true;
+            // TODO This is supposed to "scroll if needed"
+        }
+
+        case #char "7"; #through;   // NOTE No CSI
+        case #char "s";
+        {
+            renderer.savedCursor.x = cursor.x;
+            renderer.savedCursor.y = cursor.y;
+        }
+        case #char "8"; #through;   // NOTE No CSI
+        case #char "u";
+        {
+            cursor.x = renderer.savedCursor.x;
+            cursor.y = renderer.savedCursor.y;
+            movedCursor = true;
+        }
+
+
+        //// Erasing
+        case #char "J";
+        {
+            if params[0] ==
+            {
+                case 0;
+                {
+                    curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
+                    totalCellCount := renderer.cellCount.x * renderer.cellCount.y;
+
+                    range: [] RendererCell = .{ totalCellCount - curCellIdx,
+                                                *renderer.cells[ curCellIdx ] };
+                    ClearCells( range );
+                }
+                case 1;
+                {
+                    curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
+
+                    range: [] RendererCell = .{ curCellIdx,
+                                                *renderer.cells[ 0 ] };
+                    ClearCells( range );
+                }
+                case 2;
+                    ClearScreenBuffer( renderer );
+                // case 3;
+                    // "Erase saved lines" ..
+            }
+        }
+        case #char "K";
+        {
+            if params[0] ==
+            {
+                case 0;
+                {
+                    curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
+                    cellCount := renderer.cellCount.x - cursor.x;
+
+                    range: [] RendererCell = .{ cellCount,
+                                                *renderer.cells[ curCellIdx ] };
+                    ClearCells( range );
+                }
+                case 1;
+                {
+                    curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
+
+                    range: [] RendererCell = .{ cursor.x,
+                                                *renderer.cells[ curCellIdx - cursor.x ] };
+                    ClearCells( range );
+                }
+                case 2;
+                    ClearLine( cursor.y, renderer );
+            }
+        }
+
+
+        //// Colors / graphics mode
         case #char "m";
         {
             // TODO Apparently no args should be interpreted as '0' (clear props)?
@@ -1024,6 +1187,7 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
                     case 28; cursor.props.flags &= ~.Invisible;
                     case 29; cursor.props.flags &= ~.Strikethrough;
 
+                     // TODO All colous here should probably be pre-packed
                     case 30; #through;
                     case 31; #through;
                     case 32; #through;
@@ -1031,9 +1195,27 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
                     case 34; #through;
                     case 35; #through;
                     case 36; #through;
-                    case 37; #through;
+                    case 37;
+                        offset := ifx cursor.props.flags & .Bold then 8 else 0;
+                        cursor.props.foregroundColor
+                            = PackColor( renderer.palette.*[ p[0] - 30 + offset ] );
+                    case 38;
+                    {
+                        if p[1] == 2
+                        {
+                            cursor.props.foregroundColor = PackColor( xx p[2], xx p[3], xx p[4] );
+                            p += 4;
+                        }
+                        else if p[1] == 5
+                        {
+                            cursor.props.foregroundColor = PackColor( renderer.palette.*[ p[2] ] );
+                            p += 2;
+                        }
+                        else
+                            return false, false;
+                    }
                     case 39;
-                        cursor.props.foregroundColor = PackColor( globalPalette[ p[0] - 30 ] );
+                        cursor.props.foregroundColor = PackColor( renderer.palette.*[7] );
 
                     case 40; #through;
                     case 41; #through;
@@ -1042,30 +1224,49 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
                     case 44; #through;
                     case 45; #through;
                     case 46; #through;
-                    case 47; #through;
-                    case 49;
-                        cursor.props.backgroundColor = PackColor( globalPalette[ p[0] - 40 ] );
-
-                    case 38;
-                    {
-                        if p[1] == 2
-                        {
-                            cursor.props.foregroundColor = PackColor( xx p[2], xx p[3], xx p[4] );
-                            p += 4;
-                        }
-                        else
-                            return false, false;
-                    }
+                    case 47;
+                        offset := ifx cursor.props.flags & .Bold then 8 else 0;
+                        cursor.props.backgroundColor
+                            = PackColor( renderer.palette.*[ p[0] - 40 + offset ] );
                     case 48;
                     {
                         if p[1] == 2
                         {
-                            cursor.props.backgroundColor = PackColor( xx p[2], xx p[3], xx p[4] );
+                            cursor.props.backgroundColor
+                                = PackColor( xx p[2], xx p[3], xx p[4] );
                             p += 4;
+                        }
+                        else if p[1] == 5
+                        {
+                            cursor.props.backgroundColor
+                                = PackColor( renderer.palette.*[ p[2] ] );
+                            p += 2;
                         }
                         else
                             return false, false;
                     }
+                    case 49;
+                        cursor.props.backgroundColor = PackColor( renderer.palette.*[0] );
+
+                    case 90; #through;
+                    case 91; #through;
+                    case 92; #through;
+                    case 93; #through;
+                    case 94; #through;
+                    case 95; #through;
+                    case 96; #through;
+                    case 97;
+                        cursor.props.foregroundColor = PackColor( renderer.palette.*[ p[0] - 90 + 8 ] );
+
+                    case 100; #through;
+                    case 101; #through;
+                    case 102; #through;
+                    case 103; #through;
+                    case 104; #through;
+                    case 105; #through;
+                    case 106; #through;
+                    case 107;
+                        cursor.props.backgroundColor = PackColor( renderer.palette.*[ p[0] - 100 + 8 ] );
 
                     case;
                          // TODO Should we just ignore (+log) instead?
@@ -1077,6 +1278,10 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, absP: s64 = -1 ) 
                 parsed = true;
             }
         }
+
+         // TODO Private modes ('?')
+        // case #char "l";
+        // case #char "h";
         case;
             return false, false;
     }
@@ -1287,14 +1492,19 @@ GetContiguousView :: ( range: SourceBufferRange, count: s64 ) -> [] u8
 }
 
 
-IsDigit :: ( char: u8 ) -> bool
+IsDigit :: inline ( c: u8 ) -> bool
 {
-    return char >= #char "0" && char <= #char "9";
+    return c >= #char "0" && c <= #char "9";
 }
 
-ParseUnsignedInt :: ( range: *$Range ) -> u64
+IsDigitOrKnownSymbol :: inline ( c: u8 ) -> bool
 {
-    result: u64 = 0;
+    return IsDigit( c ) || c == #char "=" || c == #char "?";
+}
+
+ParseInt :: ( range: *$Range ) -> s32
+{
+    result: s32 = 0;
     while IsDigit( PeekToken( range.*, 0 ) )
     {
         token := ConsumeToken( range );
@@ -1337,15 +1547,15 @@ AdvanceColumn :: ( cursor: *CursorState, lineWrap: bool, renderer: *RendererStat
 ClearProps :: ( props: *GlyphProps )
 {
     // TODO Color schemes etc
-    props.foregroundColor = PackColor( .{ 1, 1, 1 } );
-    props.backgroundColor = PackColor( .{ 0.15, 0.15, 0.2 } );
+    props.foregroundColor = PackColor( v3.{ 1, 1, 1 } );
+    props.backgroundColor = PackColor( v3.{ 0.15, 0.15, 0.2 } );
     props.flags = 0;
 }
 
 ClearCells :: ( cells : [] RendererCell )
 {
     // TODO Color schemes etc
-    bg := PackColor( .{ 0.15, 0.15, 0.2 } );
+    bg := PackColor( v3.{ 0.15, 0.15, 0.2 } );
     for * c : cells
     {
         c.glyphIndex = 0;
@@ -1357,7 +1567,8 @@ ClearCells :: ( cells : [] RendererCell )
 
 ClearLine :: ( y: s32, renderer: *RendererState )
 {
-    range: [] RendererCell = .{ renderer.cellCount.x, *renderer.cells[ y * renderer.cellCount.x ] };
+    range: [] RendererCell = .{ renderer.cellCount.x,
+                                *renderer.cells[ y * renderer.cellCount.x ] };
     ClearCells( range );
 }
 
@@ -1389,7 +1600,8 @@ Restart :: ( shell: *Shell ) -> bool
     return shell.startProc( shell );
 }
 
-ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppState ) -> bool
+ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppState,
+                           renderer: *RendererState ) -> bool
 {
     Reset( *appState.builtinProcess );
 
@@ -1410,7 +1622,8 @@ ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppStat
     }
     else
     {
-        AppendToSourceBuffer( *appState.sourceBuffer, tprint( "<<replr>> Unknown builtin: %\n", cmd ) );
+        AppendToSourceBuffer( *appState.sourceBuffer,
+                              tprint( "<<replr>> Unknown builtin: %\n", cmd ), renderer );
         return true;
     }
 }

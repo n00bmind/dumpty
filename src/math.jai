@@ -62,6 +62,17 @@ PackColor :: ( r: u32, g: u32, b: u32 ) -> u32
     return result;
 }
 
+c3 :: struct
+{
+    r, g, b: u8;
+}
+
+PackColor :: ( color: c3 ) -> u32
+{
+    return PackColor( color.r, color.g, color.b );
+}
+
+
 // Round to nearest, following C's convention .. https://cplusplus.com/reference/cmath/round/
 Round :: ( x: float64 ) -> float64
 {
@@ -77,3 +88,5 @@ Round :: ( x: float32 ) -> float32
 {
     return cast(float32) Round( cast(float64)x );
 }
+
+
