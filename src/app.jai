@@ -971,6 +971,7 @@ DefaultSystemColours : [16] c3 :
 globalECLocations: Table( s64, bool );
 
 // TODO Do we want to make 2 versions of this to speed up ingestion?
+// TODO In any case, we'll need this to be more table-driven to remove as many branches as possible
 // https://learn.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences
 // https://www.xfree86.org/4.8.0/ctlseqs.html
 // https://en.wikipedia.org/wiki/ANSI_escape_code
@@ -987,25 +988,33 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *Render
 
     defer
     {
-        if !parsed 
-        {
-            // TODO In non-debug we probably dont wanna backtrack at all and just eat them up
-            range.* = startRange;
+        #if BUILD_CONFIG != .Release 
+            if !parsed 
+            {
+                range.* = startRange;
 
-            #if BUILD_CONFIG != .Release && RangeT != SourceBufferRange
-                if absP != -1 && !table_contains( *globalECLocations, absP )
-                {
-                    log( "Unknown EC starting at %: %..\n", absP,
-                         GetContiguousView( startRange, 8 ) );
-                    table_add( *globalECLocations, absP, true );
-                }
-        }
+                #if RangeT != SourceBufferRange
+                    if absP != -1 && !table_contains( *globalECLocations, absP )
+                    {
+                        log( "Unknown EC starting at %: %..\n", absP,
+                            GetContiguousView( startRange, 8 ) );
+                        table_add( *globalECLocations, absP, true );
+                    }
+            }
     }
 
     ConsumeCount( range, 1 );
     if PeekToken( range.*, 0 ) == #char "["
         // TODO Flag this?
         ConsumeCount( range, 1 );
+    else if PeekToken( range.*, 0 ) == #char "]"
+    {
+        ConsumeCount( range, 1 );
+        result := ParseOSC( range );
+
+        parsed = true;
+        return result, false;
+    }
 
 
     command: u8;
@@ -1040,35 +1049,35 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *Render
         case #char "H"; #through;
         case #char "f";
         {
-            cursor.x = ifx params.count then (params[1] - 1) else 0;
-            cursor.y = ifx params.count then (params[0] - 1) else 0;
+            cursor.x = ifx paramCount then (params[1] - 1) else 0;
+            cursor.y = ifx paramCount then (params[0] - 1) else 0;
             movedCursor = true;
         }
         case #char "A";
-            cursor.y -= ifx params.count then params[0] else 1;
+            cursor.y -= ifx paramCount then params[0] else 1;
             movedCursor = true;
         case #char "B";
-            cursor.y += ifx params.count then params[0] else 1;
+            cursor.y += ifx paramCount then params[0] else 1;
             movedCursor = true;
         // TODO Do we care about breaking the line for the ones that only change the col?
         case #char "C";
-            cursor.x += ifx params.count then params[0] else 1;
+            cursor.x += ifx paramCount then params[0] else 1;
         case #char "D";
-            cursor.x -= ifx params.count then params[0] else 1;
+            cursor.x -= ifx paramCount then params[0] else 1;
         case #char "E";
         {
             cursor.x = 0;
-            cursor.y += ifx params.count then params[0] else 1;
+            cursor.y += ifx paramCount then params[0] else 1;
             movedCursor = true;
         }
         case #char "F";
         {
             cursor.x = 0;
-            cursor.y -= ifx params.count then params[0] else 1;
+            cursor.y -= ifx paramCount then params[0] else 1;
             movedCursor = true;
         }
         case #char "G";
-            cursor.x = ifx params.count then (params[1] - 1) else 0;
+            cursor.x = ifx paramCount then (params[1] - 1) else 0;
         case #char "n";
         {
             // if params[0] == #char "6"
@@ -1106,17 +1115,17 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *Render
                     curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
                     totalCellCount := renderer.cellCount.x * renderer.cellCount.y;
 
-                    range: [] RendererCell = .{ totalCellCount - curCellIdx,
+                    cellRange: [] RendererCell = .{ totalCellCount - curCellIdx,
                                                 *renderer.cells[ curCellIdx ] };
-                    ClearCells( range );
+                    ClearCells( cellRange );
                 }
                 case 1;
                 {
                     curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
 
-                    range: [] RendererCell = .{ curCellIdx,
+                    cellRange: [] RendererCell = .{ curCellIdx,
                                                 *renderer.cells[ 0 ] };
-                    ClearCells( range );
+                    ClearCells( cellRange );
                 }
                 case 2;
                     ClearScreenBuffer( renderer );
@@ -1133,21 +1142,29 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *Render
                     curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
                     cellCount := renderer.cellCount.x - cursor.x;
 
-                    range: [] RendererCell = .{ cellCount,
+                    cellRange: [] RendererCell = .{ cellCount,
                                                 *renderer.cells[ curCellIdx ] };
-                    ClearCells( range );
+                    ClearCells( cellRange );
                 }
                 case 1;
                 {
                     curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
 
-                    range: [] RendererCell = .{ cursor.x,
+                    cellRange: [] RendererCell = .{ cursor.x,
                                                 *renderer.cells[ curCellIdx - cursor.x ] };
-                    ClearCells( range );
+                    ClearCells( cellRange );
                 }
                 case 2;
                     ClearLine( cursor.y, renderer );
             }
+        }
+        case #char "X";
+        {
+            curCellIdx := cursor.y * renderer.cellCount.x + cursor.x;
+
+            cellRange: [] RendererCell = .{ params[0],
+                                        *renderer.cells[ curCellIdx ] };
+            ClearCells( cellRange );
         }
 
 
@@ -1288,6 +1305,47 @@ TryParseEscapeCode :: ( range: *$RangeT, cursor: *CursorState, renderer: *Render
 
     parsed = true;
     return parsed, movedCursor;
+}
+
+ParseOSC :: ( range: *$RangeT ) -> bool
+{
+    command := -1;
+    payload: string = xx GetContiguousView( range.*, 0 );
+
+    extraAdvance := 0;
+    startCount := range.count;
+    while range.count > 0 && startCount - range.count < 256
+    {
+        if range.count == startCount && IsDigit( PeekToken( range.*, 0 ) )
+        {
+            command = ParseInt( range );
+            if PeekToken( range.*, 0 ) == #char ";"
+                ConsumeCount( range, 1 );
+
+            payload = xx GetContiguousView( range.*, 0 );
+            startCount = range.count;
+        }
+
+        token := PeekToken( range.*, 0 );
+        if token == 0x7
+        {
+            extraAdvance = 1;
+            break;
+        }
+        else if token == 0x1b && PeekToken( range.*, 1 ) == #char "\\"
+        {
+            extraAdvance = 2;
+            break;
+        }
+        // TODO Faster!
+        ConsumeCount( range, 1 );
+    }
+
+    payload.count = startCount - range.count;
+    ConsumeCount( range, extraAdvance );
+
+     // TODO Implement any of these?
+    return true;
 }
 
 
