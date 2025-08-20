@@ -1,5 +1,6 @@
 
 - Continuous redrawing while resizing window
+  https://gist.github.com/dmnsgn/76878ba6903cf15789b712464875cfdc#webgpu-%EF%B8%8F
 
 - Does it make sense to integrate something like TUI (https://github.com/ggerganov/imtui) for settings etc?
 

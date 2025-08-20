@@ -514,7 +514,6 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64,
         assert( relStartPos + sizeBytes <= buffer.bytes.count );
 
         range: [] u8 = .{ sizeBytes, *buffer.bytes[ relStartPos ] };
-        log( "Ingesting % bytes:\n%\n", sizeBytes, range );
 
         // TODO Test artificial line splitting a bit more (see below)
         SplitLineAtCount :: 4096;

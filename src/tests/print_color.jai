@@ -6,13 +6,14 @@ main :: ()
     #if 1
     {
         WinConMode: DWORD;
+        EnableProcessedOutput :: 0x0001;
         EnableVirtualTerminalProcessing :: 0x0004;
 
         hConsole := GetStdHandle( STD_OUTPUT_HANDLE );
         GetConsoleMode( hConsole, *WinConMode );
-        SetConsoleMode( hConsole, WinConMode | EnableVirtualTerminalProcessing );
+        SetConsoleMode( hConsole, WinConMode | EnableProcessedOutput | EnableVirtualTerminalProcessing );
     }
-    // TODO Why am I not seeing any ansi codes in the output? Step through the parsing code
+
     print_color( "Here's a nice message in yellow", color = .YELLOW );
 
 }

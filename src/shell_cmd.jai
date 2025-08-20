@@ -15,10 +15,24 @@ CmdShell :: struct
 
 // TODO Investigate using Job Objects on windows (https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
 // so that any child processes we create here are auto assigned to the same job object
-// Investigate whether that would cause any child processes to be killed when the parent process dies for whatever reason
+// which would cause any child processes to be killed when the parent process dies for whatever reason
 CmdShellStart :: ( base: *Shell ) -> bool
 {
     shell: *CmdShell = xx base;
+
+    // TODO This doesnt seem to have any effect.. presumably because intercepting VT code is something *conhost* would do?
+    #if 0
+    {
+        WinConMode: DWORD;
+        EnableProcessedOutput :: 0x0001;
+        EnableVirtualTerminalProcessing :: 0x0004;
+
+        hConsole := GetStdHandle( STD_OUTPUT_HANDLE );
+        GetConsoleMode( hConsole, *WinConMode );
+        SetConsoleMode( hConsole, WinConMode | EnableProcessedOutput | EnableVirtualTerminalProcessing );
+        // TODO There's also a flag for enabling VT *input*
+        // https://superuser.com/a/1687688/1026920
+    }
 
     // TODO Do we need to cache / process this?
     workingDir := get_working_directory();

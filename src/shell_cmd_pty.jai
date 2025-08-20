@@ -5,14 +5,8 @@ CmdPtyShell :: struct
     base.shutdownProc           = CmdPtyShellShutdown;
     base.writeProc              = CmdPtyShellWrite;
     base.readProc               = CmdPtyShellRead;
-    // TODO Overlapped pipes?
-    // https://github.com/microsoft/terminal/pull/17510
-    // https://github.com/microsoft/terminal/pull/17510/files/d3ee58b9fce08b50b1d307ebc012850966ef6b24..cc31a596699d5f1133eec822746b956f0218a5cb#diff-4c3ba54e8baad8805f981e9e919b632ce7656cd152586a1a3974227b866362db
-    // https://github.com/PKRoma/Terminal/commit/d68c6a5e7a8059678828e2c68f7b94f9736b36b5
-    // https://github.com/andfoy/winpty-rs/pull/96
-    // https://github.com/Microsoft/Terminal/issues/262
-
-    // base.getWaitableHandlesProc = CmdShellGetWaitableHandles;
+    // NOTE This is the "official" sync IO version of the ConPTY mechanism, without overlapped IO hence no waitable handles
+    // base.getWaitableHandlesProc = CmdPtyShellGetWaitableHandles;
 
     processInfo: PROCESS_INFORMATION;
     consoleHandle: HPCON;
@@ -95,13 +89,13 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
 
 
     memset( *shell.processInfo, 0, size_of(PROCESS_INFORMATION) );
-     // TODO Shouldnt we use %WINDOWS% here or whatever that env var is?
-     // TODO We can pass an initial dir here in 'lpCurrentDirectory'
+    // TODO Shouldnt we use %WINDOWS% here or whatever that env var is?
+    // TODO We can pass an initial dir here in 'lpCurrentDirectory'
+    // TODO Use job objects to auto-kill children when this dies
     if( !CreateProcessA( "C:\\windows\\system32\\cmd.exe", NULL, NULL, NULL,
                          .FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
                          *si.StartupInfo, *shell.processInfo ) )
     {
-         // TODO So we dont free si.lpAttributeList here!?
         log_error( "Failed creating 'cmd' process: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
     }
