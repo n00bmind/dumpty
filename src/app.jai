@@ -13,7 +13,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         appState := cast(*AppState) memory.appState;
         // appState.shell = CreateShell();
         // appState.shell = New( CmdShell );
-        appState.shell = New( CmdPtyShell );
+        appState.shell = New( CmdPtyShellAsync );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -359,6 +359,7 @@ IsRunning :: ( process: Process ) -> bool
 #load "util.jai";
 #load "shell_cmd.jai";
 #load "shell_cmd_pty.jai";
+#load "shell_cmd_pty_async.jai";
 #load "glyph_cache.jai";
 
 // TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling

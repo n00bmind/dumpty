@@ -100,6 +100,8 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
         return false;
     }
 
+    // TODO Check use of ReleasePseudoConsole & ClosePseudoConsole on the async version of this
+
     return true;
 }
 
@@ -240,6 +242,10 @@ kernel32 :: #system_library "kernel32";
 
 CreatePseudoConsole     :: ( size: COORD, input: HANDLE, output: HANDLE, flags: DWORD,
                              ret: *HPCON ) -> HRESULT #foreign kernel32;
+// Only available on Windows 11 build 26100
+// ReleasePseudoConsole    :: ( hPC: HPCON ) -> HRESULT #foreign kernel32;
+ClosePseudoConsole      :: ( hPC: HPCON ) -> HRESULT #foreign kernel32;
+
 InitializeProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, count: DWORD,
                                        flags: DWORD, size: *SIZE_T ) -> BOOL #foreign kernel32;
 UpdateProcThreadAttribute :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, flags: DWORD,
