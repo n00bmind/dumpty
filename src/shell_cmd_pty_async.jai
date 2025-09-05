@@ -186,8 +186,8 @@ CreateOverlappedPipe :: ( openMode: u32, bufferSize: int, clientHandle: *HANDLE,
     pipeDirectory := () -> HANDLE
     {
         pathData, _, byteCount := utf8_to_wide("\\Device\\NamedPipe\\",, temp);
-        len: u16 = xx (byteCount / 2);
-        path: UNICODE_STRING = .{ len, len, pathData };
+        len: u16 = xx byteCount;
+        path: UNICODE_STRING = .{ len, len + size_of(WCHAR), pathData };
 
         dirAttributes: OBJECT_ATTRIBUTES = .{
             Length = size_of(OBJECT_ATTRIBUTES),
