@@ -2,14 +2,15 @@ CmdPtyShellAsync :: struct
 {
     #as using base: Shell;
     base.startProc              = CmdPtyShellStart;
-    // base.shutdownProc           = CmdPtyShellShutdown;
-    // base.writeProc              = CmdPtyShellWrite;
-    // base.readProc               = CmdPtyShellRead;
-    // base.getWaitableHandlesProc = CmdPtyShellGetWaitableHandles;
+    base.shutdownProc           = CmdPtyShellShutdown;
+    base.writeProc              = CmdPtyShellWrite;
+    base.readProc               = CmdPtyShellRead;
+    base.getWaitableHandlesProc = CmdPtyShellGetWaitableHandles;
 
     processInfo: PROCESS_INFORMATION;
     consoleHandle: HPCON;
-    shellPipeHandle: HANDLE;
+    pipeHandle: HANDLE;
+    pipeOverlapped: *OVERLAPPED;
     eof: bool;
 }
 
@@ -18,6 +19,7 @@ CmdPtyShellAsync :: struct
 
 #import "Windows";
 #import "Windows_Utf8";
+System :: #import "System";
 
 // https://github.com/microsoft/terminal/pull/17510/files/d3ee58b9fce08b50b1d307ebc012850966ef6b24..cc31a596699d5f1133eec822746b956f0218a5cb#diff-4c3ba54e8baad8805f981e9e919b632ce7656cd152586a1a3974227b866362db
 // https://github.com/PKRoma/Terminal/commit/d68c6a5e7a8059678828e2c68f7b94f9736b36b5
@@ -30,7 +32,7 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
     // Since we're using async IO, we can use a single duplex pipe for reading AND writing
     // TODO Play with the buffer size here
     clientHandle :HANDLE;
-    if( !CreateOverlappedPipe( PIPE_ACCESS_DUPLEX, 128 * 1024, *clientHandle, *shell.shellPipeHandle ) )
+    if( !CreateOverlappedPipe( PIPE_ACCESS_DUPLEX, 128 * 1024, *clientHandle, *shell.pipeHandle, *shell.pipeOverlapped ) )
     {
         log_error( "Failed creating shell pipe: %\n", formatInt( GetLastError(), base=16 ) );
         return false;
@@ -115,10 +117,102 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
     //     },
     //     TRUE);
 
-    // TODO See CreateEventW and issue_read() in Process/windows.jai
+    // Issue an initial read on the pipe, so we get notified as soon as something comes in
+    IssueRead( shell );
 
     return true;
 }
+
+CmdPtyShellShutdown :: ( base: *Shell )
+{
+    shell: *CmdPtyShellAsync = xx base;
+
+    CloseHandle( shell.pipeOverlapped.hEvent );
+    CloseHandle( shell.pipeHandle );
+    ClosePseudoConsole( shell.consoleHandle );
+}
+
+
+CmdPtyShellWrite :: ( base: *Shell, str: string ) -> bool
+{
+    shell: *CmdPtyShellAsync = xx base;
+
+    bytesWritten: u32 = ---;
+    result := WriteFile( shell.pipeHandle, str.data, cast(u32) str.count, *bytesWritten, null );
+
+    assert( result && bytesWritten == str.count, "Couldn't write full string" );
+    return cast(bool) result;
+}
+
+CmdPtyShellRead :: ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64
+{
+    shell: *CmdPtyShellAsync = xx base;
+
+    success: bool;
+    outBytes, errBytes: s64;
+    if !shell.eof
+    {
+        range := GetNextWriteableRange( sourceBuffer );
+
+        // TODO Get some stats going for how many bytes per sec. the pipe is actually filling here
+        // TODO Try to figure out a way to easily determine whether the bottleneck is the shell or our parsing
+        success, outBytes = ReadPipe( shell, range );
+
+        if outBytes
+            CommitWrite( sourceBuffer, outBytes );
+    }
+    // if !shell.process.error.eof
+    // {
+    //     range := GetNextWriteableRange( sourceBuffer );
+    //
+    //     success, errBytes = ReadPipe( *shell.process.error, range );
+    //
+    //     if errBytes
+    //         CommitWrite( sourceBuffer, errBytes );
+    // }
+
+    totalBytes := outBytes + errBytes;
+
+    // TODO 
+    result: Process_Result = .{ type = .STILL_RUNNING };
+    // No more output, so check if it's been killed
+    #if false // shell.eof //&& shell.process.error.eof
+    {
+        success, result = get_process_result( *shell.process );
+        if !success
+        {
+            error_code, error_string := get_error_value_and_string();
+            // TODO Diagnostics
+            //log_error( "Couldn’t get process result for command \"%\": % %", get_quoted_command_string(args), error_code, error_string );
+            kill_process( *shell.process );
+            result = .{type = .EXITED, exit_code = -1};
+        }
+    }
+
+    return result, totalBytes;
+}
+
+// TODO Can we pass an array of *void here?
+CmdPtyShellGetWaitableHandles :: ( base: *Shell, handles: [] HANDLE, handleCount: *u32 )
+{
+    shell: *CmdPtyShellAsync = xx base;
+
+    // if IsRunning( shell.process )
+    {
+        if !shell.eof
+        {
+            handles[handleCount.*] = shell.pipeOverlapped.hEvent;
+            handleCount.* += 1;
+        }
+        // if !shell.process.error.eof
+        // {
+        //     handles[handleCount.*] = shell.process.error.overlapped.hEvent;
+        //     handleCount.* += 1;
+        // }
+    }
+}
+
+
 
 //// Adapted from Windows Terminal code
 // Creates an overlapped anonymous pipe. openMode should be either:
@@ -139,7 +233,8 @@ CmdPtyShellStart :: ( base: *Shell ) -> bool
 // whereas running a tool like Sysinternals' PipeList will return all those semi-named pipes.
 //
 // The code below contains comments to create unidirectional pipes.
-CreateOverlappedPipe :: ( openMode: u32, bufferSize: int, clientHandle: *HANDLE, serverHandle: *HANDLE ) -> bool
+CreateOverlappedPipe :: ( openMode: u32, bufferSize: int, clientHandleOut: *HANDLE, serverHandleOut: *HANDLE,
+                          overlappedOut: **OVERLAPPED ) -> bool
 {
     timeout: LARGE_INTEGER = .{ QuadPart = -10_0000_0000 }; // 1 second
     emptyPath: UNICODE_STRING;
@@ -251,8 +346,23 @@ CreateOverlappedPipe :: ( openMode: u32, bufferSize: int, clientHandle: *HANDLE,
 
     // TODO Handle error result
 
-    clientHandle.* = client;
-    serverHandle.* = server;
+    clientHandleOut.* = client;
+    serverHandleOut.* = server;
+
+
+
+    event := CreateEventW( NULL, 0, 0, NULL );
+    if event == null
+    {
+        error_code, error_string := System.get_error_value_and_string();
+        log_error( "Unable to create event for overlapped pipe: % %", error_code, error_string );
+        return false;
+    }
+
+    // We allocate this dynamically because we need to pass a pointer to it to Windows and then the OS writes into it a some random point in the future.
+    // If Process contains OVERLAPPED by value, it must never be moved or you get "funny" stack/memory corruption issues.
+    overlappedOut.* = New( OVERLAPPED );
+    overlappedOut.*.hEvent = event;
 
     return true;
 }
@@ -283,7 +393,43 @@ ConptyReleasePseudoConsole :: ( hPC: HPCON ) -> HRESULT
     return S_OK;
 }
 
+IssueRead :: ( shell: *CmdPtyShellAsync ) -> bool
+{
+    result := ReadFile( shell.pipeHandle, NULL, 0, NULL, shell.pipeOverlapped );
+    if result == .FALSE && GetLastError() != ERROR_IO_PENDING
+        return false;
 
+    return true;
+}
+
+ReadPipe :: ( shell: *CmdPtyShellAsync, buffer: [] u8 ) -> success: bool, bytesRead: int
+{
+    bytesRead: u32;
+    bytesAvailable: u32;
+
+    success := PeekNamedPipe( shell.pipeHandle, NULL, 0, NULL, *bytesAvailable, NULL ) != 0;
+    if success && bytesAvailable
+    {
+        success = ReadFile( shell.pipeHandle, buffer.data, cast(u32) buffer.count, *bytesRead, NULL ) != 0;
+        if success
+            success = IssueRead( shell );
+    }
+
+    if !success
+    {
+        // We can read some bytes even if BROKEN_PIPE, so return those.
+        if GetLastError() == ERROR_BROKEN_PIPE
+            shell.eof = true;
+        else
+            return false, 0;
+    }
+
+    return true, bytesRead;
+}
+
+
+
+//// Win32 crap
 
 NULL :: cast(*void) 0;
 WCHAR :: u16;
@@ -363,7 +509,7 @@ CreatePseudoConsole     :: ( size: COORD, input: HANDLE, output: HANDLE, flags: 
                              ret: *HPCON ) -> HRESULT #foreign kernel32;
 // Only available on Windows 11 build 26100
 // ReleasePseudoConsole    :: ( hPC: HPCON ) -> HRESULT #foreign kernel32;
-ClosePseudoConsole      :: ( hPC: HPCON ) -> HRESULT #foreign kernel32;
+ClosePseudoConsole      :: ( hPC: HPCON ) -> void #foreign kernel32;
 
 InitializeProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, count: DWORD,
                                        flags: DWORD, size: *SIZE_T ) -> BOOL #foreign kernel32;

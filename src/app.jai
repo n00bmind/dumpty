@@ -1764,18 +1764,19 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
         timeout = 0;
     }
 
-    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_ALLINPUT );
+    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_INPUT ); //QS_ALLINPUT );
 
-    if result >= WAIT_ABANDONED_0 && result != WAIT_TIMEOUT
+    if result == WAIT_FAILED
     {
         // TODO Logs / diagnotics
         log_error("Unable to read command's output.\n");
         return false;
     }
-    // else
-    // {
-    //     print( "MsgWaitForMultipleObjects result: %\n", result );
-    // }
+    else
+    {
+        print( "MsgWaitForMultipleObjects woken up by: %\n",
+               ifx result == WAIT_TIMEOUT then -1 else result - WAIT_OBJECT_0 );
+    }
 }
 else
 {
