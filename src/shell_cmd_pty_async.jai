@@ -1,3 +1,16 @@
+// TODO 
+// TODO We're gonna need much better on-screen visualisation & inspection of VTCs if we're ever gonna understand this mess..
+// TODO 
+
+// Async version of the "canonical" Pseudoconsole shell described in
+// https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session
+// Uses a couple tricks taken from the MS Terminal repo to create (supposedly unsupported) overlapped pipes
+// https://github.com/PKRoma/Terminal/commit/d68c6a5e7a8059678828e2c68f7b94f9736b36b5
+
+// The whole idea with using this instead of a vanilla cmd.exe plus a couple pipes is that this shell auto-translates
+// any Windows Console API calls into the (hopefully) equivalent VT codes..
+// The main drawback of that is that debugging 100 VT codes in the output all at once is akin to visiting Dante's inferno.
+// Oh, and based on the first few impressions, it also appears to be hideously slow.
 CmdPtyShellAsync :: struct
 {
     #as using base: Shell;
@@ -20,10 +33,6 @@ CmdPtyShellAsync :: struct
 #import "Windows";
 #import "Windows_Utf8";
 System :: #import "System";
-
-// https://github.com/microsoft/terminal/pull/17510/files/d3ee58b9fce08b50b1d307ebc012850966ef6b24..cc31a596699d5f1133eec822746b956f0218a5cb#diff-4c3ba54e8baad8805f981e9e919b632ce7656cd152586a1a3974227b866362db
-// https://github.com/PKRoma/Terminal/commit/d68c6a5e7a8059678828e2c68f7b94f9736b36b5
-// https://github.com/microsoft/terminal/pull/17510/files
 
 CmdPtyShellStart :: ( base: *Shell ) -> bool
 {

@@ -30,8 +30,10 @@ CursorState :: struct
 {
     x, y: s32;
     props: GlyphProps;
+    debugLeftMargin: s8;
 }
 
+// NOTE This mirrors the Cell struct in the GridShader
 RendererCell :: struct
 {
     glyphIndex: u32;

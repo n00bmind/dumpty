@@ -20,9 +20,9 @@ OpenGLState :: struct
 
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
 {
+    want_debug := BUILD_CONFIG == .Debug;
     // TODO Error handling!
-    //gl_create_context( window, 3, 3, compatibility = false, debug = true );
-    gl_create_context( window, 3, 3, compatibility = false );
+    gl_create_context( window, 3, 3, compatibility = false, debug = want_debug );
 
     gl_load( *gl );
     gl_enable_debug_output( break_on_error = true );
@@ -750,7 +750,7 @@ layout (std140) uniform ConstantsBlock
     uint blinkModulateColor;
 };
 
-// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a minimum sizeof(Cell) of 16!
+// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a min sizeof(Cell) of 16!
 struct Cell
 {
     uint glyphIndex;

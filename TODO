@@ -1,9 +1,15 @@
 
+- Organize tools dir etc. and create a "build dist" command that copies the binary+tools+data to some target dir
+
+- Hot reload shader
+- Output & atlas zoom mode
+
 - Continuous redrawing while resizing window
   https://gist.github.com/dmnsgn/76878ba6903cf15789b712464875cfdc#webgpu-%EF%B8%8F
 
 - Branchless decoding? https://nullprogram.com/blog/2017/10/06/
 
+- Git-for-windows (or similar) integration
 - Does it make sense to integrate something like TUI (https://github.com/ggerganov/imtui) for settings etc?
 
 - Add a "non-unicode" mode using CP437 .. https://cp437.github.io/
@@ -13,3 +19,10 @@
 - Cool "acid test" for unicode support in various fonts .. https://justine.lol/dox/unicode.html
 
 - Readline emulation? https://www.bigsmoke.us/readline/shortcuts
+
+
+# CMDPTY
+- Console char dimensions are currently hardcoded (understand what the deal is with these)
+- On-screen visualisation and inspection of VT codes to help make sense of the madness
+- Parse remaining unparsed VTCs
+

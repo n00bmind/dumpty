@@ -38,9 +38,8 @@ main :: ()
         write_entire_file( settingsPathPath, dataPath );
     }
 
-    // TODO May want to get more platform specific at some point for events etc? idk
     // Assume the taskbar is at the bottom and it has "some" height
-    mainWindow = create_window( INIT_WINDOW_WIDTH, screenHeight - 100, "r.e.p.l.r.", (screenWidth - INIT_WINDOW_WIDTH) / 2, 0 );
+    mainWindow = create_window( INIT_WINDOW_WIDTH, screenHeight - 100, "dumpty", (screenWidth - INIT_WINDOW_WIDTH) / 2, 0 );
     if( !mainWindow )
         exit( 1 );
 
@@ -185,8 +184,8 @@ main :: ()
                 elapsedSecs := (now - lastTitleUpdateTimestamp);
                 avgPerFrame := elapsedSecs / frameCount;
                 text, success, lenBytes :=
-                    utf8_to_wide( tprint( "% frames in %s. Avg. %ms. (% fps)\0", frameCount, elapsedSecs,
-                                        formatFloat( avgPerFrame * 1000, -1, 3 ), formatFloat( 1 / avgPerFrame, -1, 2 ) ) );
+                    utf8_to_wide( tprint( "dumpty - % frames in %s. Avg. %ms. (% fps)\0", frameCount, elapsedSecs,
+                                          formatFloat( avgPerFrame * 1000, -1, 3 ), formatFloat( 1 / avgPerFrame, -1, 2 ) ) );
                 SetWindowTextW( mainWindow, text );
 
                 lastTitleUpdateTimestamp = now;

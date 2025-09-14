@@ -1,3 +1,4 @@
+// TODO Now that we have the async version of this, this one can probably be binned.
 CmdPtyShell :: struct
 {
     #as using base: Shell;

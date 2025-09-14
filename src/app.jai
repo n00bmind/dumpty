@@ -11,9 +11,8 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         memory.initialized = true;
 
         appState := cast(*AppState) memory.appState;
-        // appState.shell = CreateShell();
-        // appState.shell = New( CmdShell );
-        appState.shell = New( CmdPtyShellAsync );
+        appState.shell = CreateShell();
+        // appState.shell = New( CmdPtyShellAsync );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -790,30 +789,44 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
 {
     ClearScreenBuffer( renderer );
 
-    // TODO Ensure the first line here starts *at or before* the first cell on the screen
+    // Ensure we start at a line that starts *at or before* the first cell on the screen
+    // i.e. if every line fits the screen width (or wrapping is disabled) we layout cellCount.y rows, otherwise we'll do more
+    // TODO This is kinda wasteful when we have very long lines, would be preferable to count how many glyphs in each line?
+    // NOTE Overflowing the bottom of the screen is not a problem, at the very end we note which screen row we ended up in,
+    // so that the renderer knows to horizontally split the buffer in two at that row and render the two halves appropriately.
     absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
     // TODO Refterm does many more lines per pass here, I assume to try to account for arbitrary cursor jumps etc
     // but I'm unsure that's really necessary?
     lineCount := renderer.cellCount.y;
 
     cursor: CursorState;
+    // TODO 
+    #if DebugDrawLineBufferValues
+        cursor.debugLeftMargin = 5;
     ClearCursor( *cursor );
 
     commandString := commandLine.input;
 
-    // TODO Debug draw line info
     for l: 0 .. lineCount - 1
     {
         lineIdx := (absStartLineIdx + l) & SourceBuffer.LinesMask;
         line := *sourceBuffer.lines[ lineIdx ];
 
+        // TODO Test huge lines straddling the end of the source buffer
+        range := GetBufferRange( line, sourceBuffer );
+        // If visualising the line buffer, prefix non empty lines
+        // TODO Debug draw line info
+        #if DebugDrawLineBufferValues
+            if range.count
+            {
+                lineInfoString := " ### ";
+                ComputeRenderedGlyphs( cast([] u8) lineInfoString, *cursor, glyphTable, renderer );
+            }
+
         // We need the cursor properties with which the line started to give an initial sensible value to our cursor
         // This is because we're merely displaying a small window of content, and the last cursor properties could have been
         // set many many lines back
         cursor.props = line.startingProps;
-        // TODO Test huge lines straddling the end of the source buffer
-        range := GetBufferRange( line, sourceBuffer );
-
         ComputeRenderedGlyphs( range, *cursor, glyphTable, renderer );
     }
 
@@ -848,7 +861,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
             case #char "\r";
             {
                 ConsumeCount( *range, 1 );
-                cursor.x = 0;
+                RewindRow( cursor );
             }
             case #char "\n";
             {
@@ -858,7 +871,7 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
             case #char "\x08";  // Backspace
             {
                 ConsumeCount( *range, 1 );
-                cursor.x -= 1;
+                RewindColumn( cursor );
             }
             case;
             {
@@ -904,6 +917,8 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
                         cell.props.flags = cursor.props.flags;
                     }
 
+                    // TODO Are we ever gonna support disabling linewrapping?
+                    // TODO When not linewrapping, we should detect when we go off-bounds here and just skip a full line
                     AdvanceColumn( cursor, lineWrap = true, renderer );
                 }
             }
@@ -1595,11 +1610,26 @@ AdvanceRowAndClear :: ( cursor: *CursorState, renderer: *RendererState )
     ClearLine( cursor.y, renderer );
 }
 
+RewindRow :: ( cursor: *CursorState )
+{
+    cursor.x = cursor.debugLeftMargin;
+}
+
 AdvanceColumn :: ( cursor: *CursorState, lineWrap: bool, renderer: *RendererState )
 {
     cursor.x += 1;
     if lineWrap && cursor.x >= renderer.cellCount.x
+    {
         AdvanceRowAndClear( cursor, renderer );
+        cursor.x += cursor.debugLeftMargin;
+    }
+}
+
+RewindColumn :: ( cursor: *CursorState )
+{
+    // TODO Is there any scenario where we want to allow this to ever go back a row?
+    if cursor.x > cursor.debugLeftMargin
+        cursor.x -= 1;
 }
 
 ClearProps :: ( props: *GlyphProps )
@@ -1764,7 +1794,8 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
         timeout = 0;
     }
 
-    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_INPUT ); //QS_ALLINPUT );
+    // NOTE Passing RAWINPUT here causes us to constantly be woken up by window msgs and burn cpu like crazy
+    result := MsgWaitForMultipleObjects( handleCount, handles.data, .FALSE, timeout, QS_KEY | QS_MOUSE ); //QS_RAWINPUT );
 
     if result == WAIT_FAILED
     {
@@ -1772,11 +1803,11 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
         log_error("Unable to read command's output.\n");
         return false;
     }
-    else
-    {
-        print( "MsgWaitForMultipleObjects woken up by: %\n",
-               ifx result == WAIT_TIMEOUT then -1 else result - WAIT_OBJECT_0 );
-    }
+    // else
+    // {
+    //     print( "MsgWaitForMultipleObjects woken up by: %\n",
+    //            ifx result == WAIT_TIMEOUT then -1 else result - WAIT_OBJECT_0 );
+    // }
 }
 else
 {
