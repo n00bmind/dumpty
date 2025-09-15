@@ -10,8 +10,13 @@
 
 main :: ()
 {
-    runPath := path_strip_filename( get_path_of_running_executable() );
-    print( "Working directory is '%'\n", get_working_directory() );
+    binPath := path_strip_filename( get_path_of_running_executable() );
+
+    runPath := binPath;
+    binIdx := find_index_from_right( runPath, "/bin/" );
+    if binIdx != -1
+        runPath = slice( runPath, 0, binIdx + 1 );
+    print( "Base directory is '%'\n", runPath );
 
     #if OS == .WINDOWS
     {
@@ -23,17 +28,19 @@ main :: ()
         screenHeight := GetSystemMetrics( SM_CYSCREEN );
     }
 
-    dataPath := join( get_path_os_program_data(), "/replr/" );
+    dataPath := join( get_path_os_program_data(), "/dumpty/" );
     make_directory_if_it_does_not_exist( dataPath );
 
     settingsPathPath := join( dataPath, "settings_path" );
     settingsPath, settingsPathOk := read_entire_file( settingsPathPath, zero_terminated = false, log_errors = false );
     if settingsPathOk
+    {
         // TODO We need to figure out whether this is the same as the last we launched for settings migration etc.
         print( "Loading settings from '%'\n", settingsPath );
+    }
     else
     {
-        print( "Initializing default settings path\n" );
+        print( "Initializing default settings path: '%'\n", settingsPath );
         // Write a default path (the data path)
         write_entire_file( settingsPathPath, dataPath );
     }
@@ -55,7 +62,7 @@ main :: ()
     appMemory: AppMemory;
     appModtime : Apollo_Time;
     appDLLName := sprint( "%.dll", APP_DLL_NAME );
-    appDLLPath := join( runPath, appDLLName );
+    appDLLPath := join( binPath, appDLLName );
 
     ft: FT_Library;
     error := FT_Init_FreeType( *ft );
@@ -67,9 +74,9 @@ main :: ()
 
     // TODO See if Jai provides utils to find out the path of font families
     // TODO Do we want to embed a Nerdfont for the fancy airline-like chars?
-    // loadedFont, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 16, *ft );
+    loadedFont, success := OpenGLLoadFont( join( runPath, "data/fonts/consolas_nf_regular.ttf" ), 14, *ft );
     // TODO Expand %WINDIR%
-    loadedFont, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf", 15, *ft );
+    // loadedFont, success := OpenGLLoadFont( "C:/windows/fonts/consolas.ttf", 15, *ft );
     // TODO Embed a small unicode fallback font as well?
     // https://unifoundry.com/unifont/index.html
     // https://github.com/unicode-org/last-resort-font?tab=readme-ov-file
@@ -95,7 +102,7 @@ main :: ()
         modtime, size, modtimeOk := file_modtime_and_size( appDLLPath );
         if modtimeOk && modtime > appModtime
         {
-            if LoadAppCode( *app, runPath, appDLLName, *appMemory )
+            if LoadAppCode( *app, binPath, appDLLName, *appMemory )
                 appModtime = modtime;
         }
         if !app
@@ -223,7 +230,6 @@ main :: ()
 // TODO Add to autosaved state & configuration
 INIT_WINDOW_WIDTH  :: 1000;
 //WINDOW_HEIGHT :: 720;
-APP_DLL_NAME :: "replr";
 
 mainWindow: Window_Type;
 glState: OpenGLState;
@@ -261,13 +267,13 @@ loadNoticeShown := false;
 tempDLLOrdinal := 0;
 oldApp: HMODULE;
 
-LoadAppCode :: ( app: *HMODULE, runPath: string, srcPath: string, appMemory: *AppMemory ) -> bool
+LoadAppCode :: ( app: *HMODULE, binPath: string, srcPath: string, appMemory: *AppMemory ) -> bool
 {
-    tempSrcPath := join( runPath, srcPath );
+    tempSrcPath := join( binPath, srcPath );
     // Make a copy of the DLL first so we don't lock it when loading it
     tempDLLName := tprint( "%.temp.%.dll", APP_DLL_NAME, tempDLLOrdinal );
     // The docs explicitly mention using '\', although it appears to work with '/' too..
-    tempDLLPath := join( runPath, tempDLLName );
+    tempDLLPath := join( binPath, tempDLLName );
 
     if !loadNoticeShown
     {

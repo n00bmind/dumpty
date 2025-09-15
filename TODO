@@ -1,6 +1,4 @@
 
-- Organize tools dir etc. and create a "build dist" command that copies the binary+tools+data to some target dir
-
 - Hot reload shader
 - Output & atlas zoom mode
 
@@ -25,4 +23,5 @@
 - Console char dimensions are currently hardcoded (understand what the deal is with these)
 - On-screen visualisation and inspection of VT codes to help make sense of the madness
 - Parse remaining unparsed VTCs
+  Is this interesting? https://github.com/haberman/vtparse
 

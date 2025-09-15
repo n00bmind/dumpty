@@ -12,16 +12,18 @@ build :: ()
     set_build_options_dc( .{do_output=false} );  // No executable for this workspace.
 
     // The compiler will set the CWD to the directory containing the current file
-    print( "Working directory for 'build' metaprogram: '%'\n", get_working_directory() );
+    basePath := get_working_directory();
+    print( "Working directory for 'build' metaprogram: '%'\n", basePath );
 
     global_options := get_build_options();
     global_options.output_path = "bin";
     global_options.intermediate_path = "bin";
 
+    do_dist := false;
     build_release := false;
     config := BuildConfig.Debug;
-    args := global_options.compile_time_command_line;
 
+    args := global_options.compile_time_command_line;
     for arg: args
     {
         if arg ==
@@ -32,6 +34,10 @@ build :: ()
                 build_release = true;
                 config = .Release;
                 print( "Building release version.\n" );
+
+            case "dist";
+                // TODO Support specifying a custom target path
+                do_dist = true;
         }
     }
 
@@ -48,6 +54,7 @@ build :: ()
 
 
     configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
+    distWorkspaces: [..] Workspace;
 
     // Application DLL
     {
@@ -55,8 +62,14 @@ build :: ()
         options := global_options;
         // TODO Actually, for release we wouldn't even want a separate dll
         options.output_type = .DYNAMIC_LIBRARY;
-        options.output_executable_name = "replr";
+        options.output_executable_name = APP_DLL_NAME;
         set_build_options( options, w );
+
+        if do_dist
+        {
+            compiler_begin_intercept( w );
+            array_add( *distWorkspaces, w );
+        }
 
         add_build_file( "src/app.jai", w );
         add_build_string( configStr, w );
@@ -67,8 +80,14 @@ build :: ()
         w := compiler_create_workspace();
         options := global_options;
         options.output_type = .EXECUTABLE;
-        options.output_executable_name = "run";
+        options.output_executable_name = "dumpty";
         set_build_options( options, w );
+
+        if do_dist
+        {
+            compiler_begin_intercept( w );
+            array_add( *distWorkspaces, w );
+        }
 
         add_build_file( "src/first.jai", w );
         add_build_string( configStr, w );
@@ -76,10 +95,17 @@ build :: ()
 
     // Test programs
     {
-        visitor :: ( info: *File_Visit_Info, user_data: *Build_Options )
+        VisitorContext :: struct
+        {
+            buildOptions: *Build_Options;
+            // workspaces: *[..] Workspace;
+        }
+        ctx: VisitorContext = .{ *global_options };
+
+        visitor :: ( info: *File_Visit_Info, user_data: *VisitorContext )
         {
             w := compiler_create_workspace();
-            options := user_data.*;
+            options := user_data.buildOptions.*;
             options.output_type = .EXECUTABLE;
             options.output_executable_name = path_strip_extension( info.short_name );
             set_build_options( options, w );
@@ -87,7 +113,7 @@ build :: ()
             add_build_file( tprint( "src/tests/%", info.short_name ), w );
             // add_build_string( configStr, w );
         }
-        visit_files( "src/tests", recursive = false, *global_options, visitor, follow_directory_symlinks = false );
+        visit_files( "src/tests", recursive = false, *ctx, visitor, follow_directory_symlinks = false );
     }
 
     // Test data
@@ -106,6 +132,85 @@ build :: ()
         write_entire_file( "data/lines", *builder );
     }
 
+
+    if do_dist && distWorkspaces.count
+    {
+        // Figure out where we'd copy files of interest
+        distPath := join( to_string( getenv( "DEV_HOME" ) ), "bin/dumpty/", separator = "/" );
+        if !make_directory_if_it_does_not_exist( distPath )
+        {
+            log( "> dist: Failed creating target dir: '%'. 'dist' action aborted.\n", distPath );
+            // Don't continue 'dist' action if we cannot create the output dir
+            do_dist = false;
+        }
+
+        // Wait for compilation to finish before attempting 'dist' action
+        completed := 0;
+        while true
+        {
+            message := compiler_wait_for_message();
+            if message.kind ==
+            {
+                case .PHASE;
+                    phase := cast(*Message_Phase) message;
+                    if phase.phase == .POST_WRITE_EXECUTABLE && do_dist
+                    {
+                        if !phase.executable_write_failed && array_find( distWorkspaces, phase.workspace )
+                        {
+                            srcPath := phase.compiler_generated_object_files[0];
+                            srcPath = join( path_strip_filename( srcPath ), phase.executable_name );
+                            tgtPath := join( distPath, phase.executable_name );
+
+                            log( "> dist: Copying % to %..\n", srcPath, distPath );
+                            copy_file( srcPath, tgtPath );
+                        }
+                    }
+
+                case .COMPLETE;
+                    completed += 1;
+                    if completed >= distWorkspaces.count
+                        break;
+            }
+        }
+
+        // Copy 'tools' & 'data'
+        blacklist := string.[
+            "huge",
+        ];
+        log( "> dist: Copying 'tools' to %..\n", distPath );
+        copy_files_recursively( join( basePath, "tools", separator = "/" ), join( distPath, "tools/" ), blacklist );
+        log( "> dist: Copying 'data' to %..\n", distPath );
+        copy_files_recursively( join( basePath, "data", separator = "/" ), join( distPath, "data/" ), blacklist );
+    }
 }
 #run build();
+
+
+// Adapted from modules/Mac_Os_Bundler
+copy_files_recursively :: ( source: string, dest: string, blacklist: []string )
+{
+    VisitorContext :: struct
+    {
+        srcPath: string;
+        tgtPath: string;
+        blacklist: [] string;
+    }
+    ctx := VisitorContext.{ source, dest, blacklist };
+
+    visitor :: ( info: *File_Visit_Info, ctx: VisitorContext )
+    {
+        if array_find( ctx.blacklist, path_filename( info.full_name ) )
+            return;
+
+        relative_path := info.full_name;
+        advance( *relative_path, ctx.srcPath.count );
+        out_path := join( ctx.tgtPath, "/", relative_path );
+
+        make_directory_if_it_does_not_exist( path_strip_filename(out_path), recursive = true );
+        copy_file( info.full_name, out_path );
+    }
+
+    res := visit_files( ctx.srcPath, true, ctx, visitor );
+    assert(res);
+}
 

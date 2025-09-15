@@ -4,6 +4,8 @@
 #load "memory.jai";
 
 
+APP_DLL_NAME :: "app";
+
 BuildConfig :: enum
 {
     Debug;

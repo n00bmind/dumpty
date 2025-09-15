@@ -93,7 +93,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                                                    appState, renderer )
                         {
                             AppendToSourceBuffer( *appState.sourceBuffer,
-                                                  "<<replr>> Internal error executing builtin command\n",
+                                                  "<<dumpty>> Internal error executing builtin command\n",
                                                   renderer );
                         }
                     }
@@ -107,7 +107,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
                         push( *cmdline.input, "\n" );
                         if !appState.shell.writeProc( appState.shell, xx cmdline.input )
                             AppendToSourceBuffer( *appState.sourceBuffer,
-                                                  "<<replr>> Internal error executing shell command\n",
+                                                  "<<dumpty>> Internal error executing shell command\n",
                                                   renderer );
                     }
 
@@ -158,14 +158,14 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         if result.type == .EXITED
         {
             if result.exit_code
-                print( "<<replr>> Builtin process exited with error code %.\n", result.exit_code );
+                print( "<<dumpty>> Builtin process exited with error code %.\n", result.exit_code );
             deinit( *appState.builtinProcess );
 
             appState.shell.writeProc( appState.shell, "\n" );
         }
         else if result.type == .FAILED_TO_LAUNCH
         {
-            print( "<<replr>> Builtin process failed to launch (%).\n", result.exit_code );
+            print( "<<dumpty>> Builtin process failed to launch (%).\n", result.exit_code );
             deinit( *appState.builtinProcess );
 
             appState.shell.writeProc( appState.shell, "\n" );
@@ -1711,7 +1711,7 @@ ExecuteBuiltinCommand :: ( process: *Process, command: [] u8, appState: *AppStat
     else
     {
         AppendToSourceBuffer( *appState.sourceBuffer,
-                              tprint( "<<replr>> Unknown builtin: %\n", cmd ), renderer );
+                              tprint( "<<dumpty>> Unknown builtin: %\n", cmd ), renderer );
         return true;
     }
 }
