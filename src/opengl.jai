@@ -16,6 +16,9 @@ OpenGLState :: struct
     maxUniformBlockSize: GLint;
     maxUniformArrayCount: GLint;
     maxTextureBufferSize: GLint;
+
+    // For hot-reloading shaders
+    watcher: File_Watcher(OpenGLState);
 }
 
 OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
@@ -69,9 +72,25 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     shaderOk = BuildTestShaderProgram( *state.testShader );
     assert( shaderOk );
 
+    #if BUILD_CONFIG != .Release
+    {
+        fileWatcherOk := false;
+        if init( *state.watcher, FileChangeCallback, state, events_to_watch = .MODIFIED )
+            if add_directories( *state.watcher, "src" )
+                fileWatcherOk = true;
+
+        if !fileWatcherOk
+            log_error( "Could not initialize file watcher" );
+    }
+
     return true;
 }
 
+OpenGLShutdown :: ( state: *OpenGLState )
+{
+    #if BUILD_CONFIG != .Release
+        deinit( state.watcher );
+}
 
 DumpGlyphBitmapData :: ( buffer: *u8, pitch: s32, height: s32 )
 {
@@ -393,6 +412,8 @@ OpenGLRender :: ( state: *OpenGLState, font: LoadedFont, renderer: RendererState
 {
     #if BUILD_CONFIG != .Release
     {
+        changed, needs_wait, wait_seconds := process_changes( *state.watcher );
+
         if renderer.debugDrawAtlas
         {
             OpenGLDrawAtlas( state, font );
@@ -624,8 +645,11 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 
 #import "File";
 #import "Math";
+#import "File_Watcher";
 #import "GL" ( DUMP_GL_ERRORS = true );
 #import "freetype-2.12.1";
+
+
 
 TextVertex :: struct
 {
@@ -666,13 +690,13 @@ GridShader :: struct
 
 LOG_BUFFER_SIZE :: 512;
 
-PREFIX_V :: #string END
+PROLOGUE_V :: #string END
 #version 330 core
 #define VERTEX_SHADER
 #define OUT_IN out
 END
 
-PREFIX_F :: #string END
+PROLOGUE_F :: #string END
 #version 330 core
 #define FRAGMENT_SHADER
 #define OUT_IN in
@@ -709,168 +733,21 @@ CreateAndCompileShader :: ( shaderType : GLenum, shaderString: string, prefix: s
     return shaderObj;
 }
 
+#placeholder GRID_SHADER;
+
 BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
-    // TODO Move this to the file and set up hot reloading!
-GRID_SHADER :: #string END
-
-#ifdef VERTEX_SHADER
-
-const vec2 positions[4] = vec2[](
-    vec2(-1, -1),
-    vec2(+1, -1),
-    vec2(-1, +1),
-    vec2(+1, +1)
-);
-void main()
+#if BUILD_CONFIG == .Release
+    gridShader := GRID_SHADER;
+else
 {
-    // Emit hardcoded positions for the 4 corners of the window
-    // This assumes we're invoking this with a GL_TRIANGLE_STRIP call (and a count of 4)
-    gl_Position = vec4( positions[gl_VertexID], 0.0, 1.0 );
+    gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ),
+                                    zero_terminated = true );
 }
-
-#endif // VERTEX_SHADER
-
-
-#ifdef FRAGMENT_SHADER
-
-layout(origin_upper_left) in vec4 gl_FragCoord;
-out vec4 color;
-
-uniform sampler2D glyphSampler;
-uniform usamplerBuffer cellsSampler;
-
-layout (std140) uniform ConstantsBlock
-{
-    ivec2 windowDim;
-    ivec2 cellSize;
-    ivec2 cellCount;
-    ivec2 borderDim;
-    uint borderColor;
-    uint blinkModulateColor;
-};
-
-// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a min sizeof(Cell) of 16!
-struct Cell
-{
-    uint glyphIndex;
-    // NOTE Colors are always considered sRGB. Cannot do the linear conversion on the CPU while still keeping them packed
-    // See https://blog.demofox.org/2018/03/10/dont-convert-srgb-u8-to-linear-u8/
-    uint foregroundColor;
-    uint backgroundColor;
-    uint flags;
-};
-
-
-ivec2 UnpackGlyphXY( uint packedIndex )
-{
-    uint x = packedIndex & 0xffffu;
-    uint y = packedIndex >> 16;
-    return ivec2( x, y );
-}
-
-vec3 UnpackColor(uint packedColor)
-{
-    uint r = packedColor & 0xffu;
-    uint g = (packedColor >> 8) & 0xffu;
-    uint b = (packedColor >> 16) & 0xffu;
-    return vec3(r, g, b) / 255.0;
-}
-
-// TODO We could make this value a program setting.
-// According to https://www.puredevsoftware.com/blog/2019/01/22/sub-pixel-gamma-correct-font-rendering/ and
-// https://freetype.org/freetype2/docs/reference/ft2-base_interface.html, it seems to be more optimal to go below the standard 2.2 power curve
-//const vec3 gamma = vec3( 2.2 );
-
-// For now go with the "Adobe tested" value (pass it as a uniform to quickly compare a few values)
-const vec3 gamma = vec3( 1.8 );
-const vec3 oneOverGamma = vec3( 1.0 / gamma );
-
-vec3 ColorToLinear( vec3 gammaColor )
-{
-    return pow( gammaColor, gamma );
-}
-vec3 ColorToGamma( vec3 linearColor )
-{
-    return pow( linearColor, oneOverGamma );
-}
-
-
-Cell CellFromTextureIndex( ivec2 cellIndex )
-{
-    int idx = cellIndex.y * cellCount.x + cellIndex.x;
-    uvec4 value = texelFetch( cellsSampler, idx );
-
-    Cell cell = Cell( value.r, value.g, value.b, value.a );
-    return cell;
-}
-
-
-void main ()
-{
-    // Compute what the top left margin must be so the bottom left is kept constant
-    ivec2 topLeftMargin = ivec2( borderDim.x, windowDim.y - cellCount.y*cellSize.y - borderDim.y );
-    ivec2 cellIndex = ivec2( gl_FragCoord.xy - topLeftMargin ) / cellSize;
-    ivec2 cellPos = ivec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
-
-    vec3 result;
-    // TODO Pass flags in constants to toggle drawing cell bounds
-    // if( cellPos.x == 0 || cellPos.y == 0 )
-    // {
-    //     result = vec3( 0.8, 0, 0 );
-    // }
-    // else
-    if( (gl_FragCoord.x >= topLeftMargin.x) &&
-        (gl_FragCoord.y >= topLeftMargin.y) &&
-        (cellIndex.x < cellCount.x) &&
-        (cellIndex.y < cellCount.y) )
-    {
-        Cell cell = CellFromTextureIndex( cellIndex );
-
-        ivec2 glyphPos = UnpackGlyphXY( cell.glyphIndex ) * cellSize;
-
-        vec2 atlasPos = vec2( glyphPos + cellPos );
-        vec4 glyphTexel = texture( glyphSampler, atlasPos / 1024 );
-
-        // Gamma-correct cell colors
-        vec3 background = ColorToLinear( UnpackColor( cell.backgroundColor ) );
-        vec3 foreground = ColorToLinear( UnpackColor( cell.foregroundColor ) );
-
-        vec3 blink = UnpackColor( blinkModulateColor );
-        // TODO Magic numbers
-        if( (cell.flags & 0x10u) != 0u ) foreground *= blink;
-        //if((cell.foreground >> 25) & 1) foreground *= 0.5;
-
-        // Blend using (subpixel) alpha values with each color component
-        // https://www.puredevsoftware.com/blog/2019/01/22/sub-pixel-gamma-correct-font-rendering/
-        // https://freetype.org/freetype2/docs/reference/ft2-lcd_rendering.html
-        result.r = glyphTexel.r * foreground.r + (1 - glyphTexel.r) * background.r;
-        result.g = glyphTexel.g * foreground.g + (1 - glyphTexel.g) * background.g;
-        result.b = glyphTexel.b * foreground.b + (1 - glyphTexel.b) * background.b;
-
-        // Gamma encode it again for presentation
-        result = ColorToGamma( result );
-    }
-    else
-    {
-        result = UnpackColor( borderColor );
-        //result = vec3( 0.15, 0.15, 0.2 );
-    }
-
-    color = vec4( result, 1 );
-}
-
-#endif // FRAGMENT_SHADER
-END
 
     //builder: String_Builder;
     //builder.allocator = temp;
     //init_string_builder( *builder );
-
-    // TODO #if RELEASE etc
-    // TODO Hot reloading
-    gridShader := GRID_SHADER;
-    //gridShader := read_entire_file( "../src/text_grid.glsl", zero_terminated = true );
 
     // Build a header with some defines
     cellsPerPage := state.maxUniformBlockSize / size_of(RendererCell);
@@ -878,9 +755,9 @@ END
     //append( *builder, tprint( "#define USE_TEXTURE_BUFFER %\n", ifx USE_TEXTURE_BUFFER then 1 else 0 ) );
     //append( *builder, tprint( "#define CELLS_PER_PAGE_BITS %\n", Log2( cellsPerPage ) ) );
 
-    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, gridShader, PREFIX_V );
-    //fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PREFIX_F, builder_to_string( *builder ) );
-    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PREFIX_F );
+    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, gridShader, PROLOGUE_V );
+    //fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PROLOGUE_F, builder_to_string( *builder ) );
+    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, gridShader, PROLOGUE_F );
     if !vShader || !fShader
         return false;
 
@@ -1015,8 +892,8 @@ void main () {
 #endif // FRAGMENT_SHADER
 END
 
-    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, TEST_SHADER, PREFIX_V );
-    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, TEST_SHADER, PREFIX_F );
+    vShader := CreateAndCompileShader( GL_VERTEX_SHADER, TEST_SHADER, PROLOGUE_V );
+    fShader := CreateAndCompileShader( GL_FRAGMENT_SHADER, TEST_SHADER, PROLOGUE_F );
     if !vShader || !fShader
         return false;
 
@@ -1109,3 +986,19 @@ OpenGLAllocateTexture :: ( data: *void, width: int, height: int, filtered: bool,
     return textureHandle;
 }
 
+FileChangeCallback :: ( watcher: *File_Watcher(OpenGLState), change: *File_Change, user_data: *OpenGLState )
+{
+    state: *OpenGLState = user_data;
+
+    if change.events & .MODIFIED
+    {
+        if path_filename( change.full_path ) == GRID_SHADER_FILENAME
+        {
+            log( "Reloading %..\n", GRID_SHADER_FILENAME );
+            // TODO Quite likely that we should be doing this in the main thread
+            // (OpenGLRender), however this seems to work for now (!)
+            shaderOk := BuildGridShaderProgram( *state.gridShader, <<state );
+            assert( shaderOk );
+        }
+    }
+}

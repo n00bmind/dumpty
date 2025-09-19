@@ -41,10 +41,19 @@ build :: ()
         }
     }
 
+    configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
+
+    shaderStr := "";
     if build_release
     {
         set_optimization( *global_options, .VERY_OPTIMIZED, true );
         global_options.backend =.LLVM;
+
+        // Build string for embedding the grid shader
+        // TODO Doesnt look like we really care about zero terminating this does it
+        gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ),
+                                        zero_terminated = true );
+        shaderStr = tprint( "GRID_SHADER :: #string END\n%\nEND;", gridShader );
     }
     else
     {
@@ -53,7 +62,6 @@ build :: ()
     }
 
 
-    configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
     distWorkspaces: [..] Workspace;
 
     // Application DLL
@@ -65,14 +73,12 @@ build :: ()
         options.output_executable_name = APP_DLL_NAME;
         set_build_options( options, w );
 
-        if do_dist
-        {
-            compiler_begin_intercept( w );
-            array_add( *distWorkspaces, w );
-        }
+        compiler_begin_intercept( w );
 
         add_build_file( "src/app.jai", w );
         add_build_string( configStr, w );
+
+        array_add( *distWorkspaces, w );
     }
 
     // Main executable
@@ -83,14 +89,12 @@ build :: ()
         options.output_executable_name = "dumpty";
         set_build_options( options, w );
 
-        if do_dist
-        {
-            compiler_begin_intercept( w );
-            array_add( *distWorkspaces, w );
-        }
+        compiler_begin_intercept( w );
 
         add_build_file( "src/first.jai", w );
         add_build_string( configStr, w );
+
+        array_add( *distWorkspaces, w );
     }
 
     // Test programs
@@ -133,10 +137,11 @@ build :: ()
     }
 
 
-    if do_dist && distWorkspaces.count
+    distPath := "";
+    if do_dist
     {
         // Figure out where we'd copy files of interest
-        distPath := join( to_string( getenv( "DEV_HOME" ) ), "bin/dumpty/", separator = "/" );
+        distPath = join( to_string( getenv( "DEV_HOME" ) ), "bin/dumpty/", separator = "/" );
         if !make_directory_if_it_does_not_exist( distPath )
         {
             log( "> dist: Failed creating target dir: '%'. 'dist' action aborted.\n", distPath );
@@ -144,43 +149,56 @@ build :: ()
             do_dist = false;
         }
 
-        // Wait for compilation to finish before attempting 'dist' action
-        completed := 0;
-        while true
+        if do_dist
         {
-            message := compiler_wait_for_message();
-            if message.kind ==
-            {
-                case .PHASE;
-                    phase := cast(*Message_Phase) message;
-                    if phase.phase == .POST_WRITE_EXECUTABLE && do_dist
-                    {
-                        if !phase.executable_write_failed && array_find( distWorkspaces, phase.workspace )
-                        {
-                            srcPath := phase.compiler_generated_object_files[0];
-                            srcPath = join( path_strip_filename( srcPath ), phase.executable_name );
-                            tgtPath := join( distPath, phase.executable_name );
-
-                            log( "> dist: Copying % to %..\n", srcPath, distPath );
-                            copy_file( srcPath, tgtPath );
-                        }
-                    }
-
-                case .COMPLETE;
-                    completed += 1;
-                    if completed >= distWorkspaces.count
-                        break;
-            }
+            // Copy 'tools' & 'data'
+            blacklist := string.[
+                "huge",
+            ];
+            log( "> dist: Copying 'tools' to %..\n", distPath );
+            copy_files_recursively( join( basePath, "tools", separator = "/" ), join( distPath, "tools/" ), blacklist );
+            log( "> dist: Copying 'data' to %..\n", distPath );
+            copy_files_recursively( join( basePath, "data", separator = "/" ), join( distPath, "data/" ), blacklist );
         }
+    }
 
-        // Copy 'tools' & 'data'
-        blacklist := string.[
-            "huge",
-        ];
-        log( "> dist: Copying 'tools' to %..\n", distPath );
-        copy_files_recursively( join( basePath, "tools", separator = "/" ), join( distPath, "tools/" ), blacklist );
-        log( "> dist: Copying 'data' to %..\n", distPath );
-        copy_files_recursively( join( basePath, "data", separator = "/" ), join( distPath, "data/" ), blacklist );
+
+    // Main msg loop for all workspaces
+    completed := 0;
+    while true
+    {
+        message := compiler_wait_for_message();
+        if message.kind ==
+        {
+            case .PHASE;
+                phase := cast(*Message_Phase) message;
+                // Wait for compilation to finish before attempting 'dist' action
+                if phase.phase == .POST_WRITE_EXECUTABLE && do_dist
+                {
+                    if !phase.executable_write_failed && array_find( distWorkspaces, phase.workspace )
+                    {
+                        srcPath := phase.compiler_generated_object_files[0];
+                        srcPath = join( path_strip_filename( srcPath ), phase.executable_name );
+                        tgtPath := join( distPath, phase.executable_name );
+
+                        log( "> dist: Copying % to %..\n", srcPath, distPath );
+                        copy_file( srcPath, tgtPath );
+                    }
+                }
+
+            case .FILE;
+                file := cast(*Message_File) message;
+                if build_release && ends_with( file.fully_pathed_filename, "opengl.jai" )
+                    add_build_string( shaderStr, message.workspace, file );
+
+            // NOTE Atm we only care about adding strings precisely to the workspaces
+            // in 'distWorkspaces', which we wait for here, but in the future that
+            // may no longer be the case, so we may need to wait for all of them instead..
+            case .COMPLETE;
+                completed += 1;
+                if completed >= distWorkspaces.count
+                    break;
+        }
     }
 }
 #run build();

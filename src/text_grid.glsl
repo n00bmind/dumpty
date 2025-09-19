@@ -1,3 +1,4 @@
+
 #ifdef VERTEX_SHADER
 
 const vec2 positions[4] = vec2[](
@@ -34,7 +35,7 @@ layout (std140) uniform ConstantsBlock
     uint blinkModulateColor;
 };
 
-// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a minimum sizeof(Cell) of 16!
+// NOTE Since they're elements in an array, before 4.3 there seems to be no way of avoiding having a min sizeof(Cell) of 16!
 struct Cell
 {
     uint glyphIndex;
@@ -98,6 +99,12 @@ void main ()
     ivec2 cellPos = ivec2( gl_FragCoord.xy - topLeftMargin ) % cellSize;
 
     vec3 result;
+    // TODO Pass flags in constants to toggle drawing cell bounds
+    // if( cellPos.x == 0 || cellPos.y == 0 )
+    // {
+    //     result = vec3( 0.8, 0, 0 );
+    // }
+    // else
     if( (gl_FragCoord.x >= topLeftMargin.x) &&
         (gl_FragCoord.y >= topLeftMargin.y) &&
         (cellIndex.x < cellCount.x) &&

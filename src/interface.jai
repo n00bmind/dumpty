@@ -5,6 +5,8 @@
 
 
 APP_DLL_NAME :: "app";
+GRID_SHADER_FILENAME :: "text_grid.glsl";
+
 
 BuildConfig :: enum
 {

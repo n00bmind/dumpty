@@ -201,6 +201,7 @@ main :: ()
         }
     }
 
+    OpenGLShutdown( *glState );
     Shutdown( *appMemory );
 
     FT_Done_Face( cast(FT_Face) renderer.loadedFont.face );
