@@ -37,7 +37,14 @@ CmdShellStart :: ( base: *Shell ) -> bool
     // TODO Do we need to cache / process this?
     workingDir := get_working_directory();
 
+
+    // TODO Additionally to this, review what refterm does about redirecting/cloning the stdin / stdout handles
+    // and see if we can convince 'ls --color=auto' that it is indeed connected to a terminal (same for jai compiler)
+    // (also, investigate possible values for the %TERM% variable.. what does WSL set this to?)
+
+
     Init( *shell.process );
+    // cmdPath := "C:\\windows\\system32\\cmd.exe";
     success := create_process( *shell.process, "cmd.exe",
                                working_directory = workingDir,
                                capture_and_return_output = true,

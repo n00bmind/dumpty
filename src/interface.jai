@@ -118,6 +118,8 @@ LoadedFont :: struct
 }
 
 
-UpdateAndRenderFunc :: #type ( input: AppInput, memory: *AppMemory, renderer: *RendererState );
-ShutdownFunc :: #type ( memory: *AppMemory );
+AppInitFunc :: #type ( memory: *AppMemory, renderer: *RendererState );
+AppShutdownFunc :: #type ( memory: *AppMemory );
+AppWaitForInputFunc :: #type ( memory: *AppMemory );
+AppUpdateAndRenderFunc :: #type ( input: AppInput, memory: *AppMemory, renderer: *RendererState );
 

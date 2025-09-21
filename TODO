@@ -8,19 +8,31 @@
 
 - Git-for-windows (or similar) integration
 - Does it make sense to integrate something like TUI (https://github.com/ggerganov/imtui) for settings etc?
+  Would need to support everything that ncurses outputs.. just clone all stdout data to some log and start hacking away I guess..
+  (probably a good test of all the VTC crap)
+  This might be interesting as a ref: https://github.com/gudinoff/jai-modules/tree/master/TUI
+- Notcurses looks even more cool, but harder to pull off: https://github.com/dankamongmen/notcurses
 
 - Add a "non-unicode" mode using CP437 .. https://cp437.github.io/
   Eventually support Blinkenlights .. https://github.com/jart/blink
 
 - Improve Unicode support, with proper segmenting & shaping. Try out https://github.com/JimmyLefevre/kb
 - Cool "acid test" for unicode support in various fonts .. https://justine.lol/dox/unicode.html
+- Big test file with tons of stuff: https://courses.cs.vt.edu/cs3214/fall2022/exercises/ex0/utf8-demo.txt
 
 - Readline emulation? https://www.bigsmoke.us/readline/shortcuts
+
+- Tons of TUI tools:
+  https://terminaltrove.com/categories/tui/
+  https://github.com/rothgar/awesome-tuis
+
+- Curious how this works? https://asciinema.org/
 
 
 # CMDPTY
 - Console char dimensions are currently hardcoded (understand what the deal is with these)
 - On-screen visualisation and inspection of VT codes to help make sense of the madness
+  (or perhaps a separate log window which can be navigated by clicking on cells etc?)
 - Parse remaining unparsed VTCs
   Is this interesting? https://github.com/haberman/vtparse
 

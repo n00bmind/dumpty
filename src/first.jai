@@ -13,9 +13,8 @@ main :: ()
     binPath := path_strip_filename( get_path_of_running_executable() );
 
     runPath := binPath;
-    binIdx := find_index_from_right( runPath, "/bin/" );
-    if binIdx != -1
-        runPath = slice( runPath, 0, binIdx + 1 );
+    if ends_with( runPath, "/bin/" )
+        runPath = slice( runPath, 0, runPath.count - 4 );
     print( "Base directory is '%'\n", runPath );
 
     #if OS == .WINDOWS
@@ -103,13 +102,19 @@ main :: ()
         if modtimeOk && modtime > appModtime
         {
             if LoadAppCode( *app, binPath, appDLLName, *appMemory )
+            {
                 appModtime = modtime;
+                AppInit( *appMemory, *renderer );
+            }
         }
         if !app
         {
             print( "FATAL :: Couldn't load app code!\n" );
             exit( 1 );
         }
+
+
+        AppWaitForInput( *appMemory );
 
         // TODO Do something akin to https://github.com/cmuratori/dtc to allow normal redrawing while resizing etc.
         update_window_events();
@@ -172,7 +177,7 @@ main :: ()
         // TODO Check out the Remap_Context module and see if we need to do something like that
         // or maybe simply pass along our own prepared Context perhaps?
         // https://discord.com/channels/661732390355337246/1057205060876128278/1381758854236475459
-        UpdateAndRender( appInput, *appMemory, *renderer );
+        AppUpdateAndRender( appInput, *appMemory, *renderer );
 
         // OpenGLDrawTextWithFace( *glState, "H3llo w0rld!", 100, 100, loadedFont );
         OpenGLRender( *glState, loadedFont, renderer );
@@ -202,7 +207,7 @@ main :: ()
     }
 
     OpenGLShutdown( *glState );
-    Shutdown( *appMemory );
+    AppShutdown( *appMemory );
 
     FT_Done_Face( cast(FT_Face) renderer.loadedFont.face );
     FT_Done_FreeType( ft );
@@ -262,8 +267,10 @@ InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s3
 
 
 // App API
-UpdateAndRender: UpdateAndRenderFunc = null;
-Shutdown: ShutdownFunc = null;
+AppInit: AppInitFunc;
+AppShutdown: AppShutdownFunc;
+AppWaitForInput: AppWaitForInputFunc;
+AppUpdateAndRender: AppUpdateAndRenderFunc;
 loadNoticeShown := false;
 tempDLLOrdinal := 0;
 oldApp: HMODULE;
@@ -287,15 +294,21 @@ LoadAppCode :: ( app: *HMODULE, binPath: string, srcPath: string, appMemory: *Ap
         if <<app
             oldApp = <<app;
 
-        <<app = LoadLibraryA( tempDLLPath.data );
+        <<app = LoadLibraryA( to_c_string( tempDLLPath ) );
         if <<app
         {
-            UpdateAndRender = cast(type_of(UpdateAndRender)) GetProcAddress( <<app, "UpdateAndRender" );
-            //print( "Found 'UpdateAndRender' func at %\n", UpdateAndRender );
-            assert( UpdateAndRender != null );
+            AppInit = cast(type_of(AppInit)) GetProcAddress( <<app, "AppInit" );
+            assert( AppInit != null );
 
-            Shutdown = cast(type_of(Shutdown)) GetProcAddress( <<app, "Shutdown" );
-            assert( Shutdown != null );
+            AppShutdown = cast(type_of(AppShutdown)) GetProcAddress( <<app, "AppShutdown" );
+            assert( AppShutdown != null );
+
+            AppUpdateAndRender = cast(type_of(AppUpdateAndRender)) GetProcAddress( <<app, "AppUpdateAndRender" );
+            //print( "Found 'AppUpdateAndRender' func at %\n", AppUpdateAndRender );
+            assert( AppUpdateAndRender != null );
+
+            AppWaitForInput = cast(type_of(AppWaitForInput)) GetProcAddress( <<app, "AppWaitForInput" );
+            assert( AppWaitForInput != null );
 
             FreeLibrary( oldApp );
             tempDLLOrdinal = 1 - tempDLLOrdinal;

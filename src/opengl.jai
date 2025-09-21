@@ -643,8 +643,9 @@ OpenGLDrawFSQTest :: ( state: *OpenGLState )
 
 #scope_file
 
-#import "File";
 #import "Math";
+#import "File";
+#import "File_Utilities";
 #import "File_Watcher";
 #import "GL" ( DUMP_GL_ERRORS = true );
 #import "freetype-2.12.1";
@@ -737,12 +738,13 @@ CreateAndCompileShader :: ( shaderType : GLenum, shaderString: string, prefix: s
 
 BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
-#if BUILD_CONFIG == .Release
     gridShader := GRID_SHADER;
-else
+
+#if BUILD_CONFIG != .Release
 {
-    gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ),
-                                    zero_terminated = true );
+    path := tprint( "src/%", GRID_SHADER_FILENAME );
+    if file_exists( path )
+        gridShader = read_entire_file( path, zero_terminated = true );
 }
 
     //builder: String_Builder;

@@ -42,18 +42,15 @@ build :: ()
     }
 
     configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
+    // Build string for embedding the grid shader
+    // TODO Doesnt look like we really care about zero terminating this does it
+    gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ), zero_terminated = true );
+    shaderStr := tprint( "GRID_SHADER :: #string END\n%\nEND;", gridShader );
 
-    shaderStr := "";
     if build_release
     {
         set_optimization( *global_options, .VERY_OPTIMIZED, true );
         global_options.backend =.LLVM;
-
-        // Build string for embedding the grid shader
-        // TODO Doesnt look like we really care about zero terminating this does it
-        gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ),
-                                        zero_terminated = true );
-        shaderStr = tprint( "GRID_SHADER :: #string END\n%\nEND;", gridShader );
     }
     else
     {
@@ -188,7 +185,7 @@ build :: ()
 
             case .FILE;
                 file := cast(*Message_File) message;
-                if build_release && ends_with( file.fully_pathed_filename, "opengl.jai" )
+                if ends_with( file.fully_pathed_filename, "opengl.jai" )
                     add_build_string( shaderStr, message.workspace, file );
 
             // NOTE Atm we only care about adding strings precisely to the workspaces

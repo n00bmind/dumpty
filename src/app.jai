@@ -1,9 +1,7 @@
 #import "Basic";
 
-// TODO Make an @implements(UpdateAndRenderFunc) note that's parsed by the metaprogram which will then
-// #assert( type_of(UpdateAndRender) == UpdateAndRenderFunc );
 #program_export
-UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererState )
+AppInit :: ( memory: *AppMemory, renderer: *RendererState )
 {
     if !memory.initialized
     {
@@ -17,10 +15,42 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
     }
+    else
+    {
+        // Anything we need to do upon being reloaded would go here..
+    }
+}
 
+#program_export
+AppShutdown :: ( memory: *AppMemory )
+{
+    appState := cast(*AppState) memory.appState;
+
+    appState.shell.shutdownProc( appState.shell );
+    Shutdown( *appState.builtinProcess );
+}
+
+#program_export
+AppWaitForInput :: ( memory: *AppMemory )
+{
+    appState := cast(*AppState) memory.appState;
+
+    nowMs := cast(int)( seconds_since_init() * 1000 );
+    // Compute how many millis to wait until the next cursor blink toggling
+    remainder := (nowMs / BlinkTimeMillis + 1) * BlinkTimeMillis - nowMs;
+
+    WaitForAllOpenHandles( appState, remainder );
+}
+
+// TODO Make an @implements(UpdateAndRenderFunc) note that's parsed by the metaprogram which will then
+// #assert( type_of(UpdateAndRender) == UpdateAndRenderFunc );
+#program_export
+AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererState )
+{
     appState := cast(*AppState) memory.appState;
     cmdline := *appState.commandLine;
 
+    // Process this frame's window events
     for input.events
     {
         if it.type ==
@@ -136,16 +166,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    BlinkTimeMillis :: 750;
-    nowMs := cast(int)( seconds_since_init() * 1000 );
-    // Compute how many millis to wait until the next cursor blink switching
-    remainder := (nowMs / BlinkTimeMillis + 1) * BlinkTimeMillis - nowMs;
-
-    // FIXME Unsure why but we're getting woken up constantly rn.. *something* seems to cause our message queue to be spammed?
-    // This seems to only happen whenever our window has the focus for some reason
-    // Even more fun! Seems to happen on the desktop and not on the laptop!?
-    WaitForAllOpenHandles( appState, remainder );
-
+    // Gather output from the builtin and / or shell processes
     if IsRunning( appState.builtinProcess )
     {
         absStartP := appState.sourceBuffer.absoluteHeadPos;
@@ -191,7 +212,7 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
         }
     }
 
-    nowMs = cast(int)( seconds_since_init() * 1000 );
+    nowMs := cast(int)( seconds_since_init() * 1000 );
     blink := (nowMs / BlinkTimeMillis) & 1;
     renderer.blinkModulateColor = cast(u32) ifx blink 0xFFFFFFFF else 0xFF111111;
 
@@ -205,15 +226,6 @@ UpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *RendererSta
     {
         LayoutScreenBuffer( appState.sourceBuffer, appState.lineOffset, cmdline.*, *appState.glyphTable, renderer );
     }
-}
-
-#program_export
-Shutdown :: ( memory: *AppMemory )
-{
-    appState := cast(*AppState) memory.appState;
-
-    appState.shell.shutdownProc( appState.shell );
-    Shutdown( *appState.builtinProcess );
 }
 
 
@@ -364,6 +376,9 @@ IsRunning :: ( process: Process ) -> bool
 // TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling
 #import "Window_Creation";
 #load "opengl.jai";
+
+
+BlinkTimeMillis :: 750;
 
 #if OS == .WINDOWS
 {
