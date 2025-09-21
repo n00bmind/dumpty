@@ -76,7 +76,7 @@ OpenGLInit :: ( state: *OpenGLState, window: Window_Type ) -> bool
     {
         fileWatcherOk := false;
         if init( *state.watcher, FileChangeCallback, state, events_to_watch = .MODIFIED )
-            if add_directories( *state.watcher, "src" )
+            if add_directories( *state.watcher, "src/shaders" )
                 fileWatcherOk = true;
 
         if !fileWatcherOk
@@ -734,17 +734,23 @@ CreateAndCompileShader :: ( shaderType : GLenum, shaderString: string, prefix: s
     return shaderObj;
 }
 
-#placeholder GRID_SHADER;
-
 BuildGridShaderProgram :: ( shader: *GridShader, state: OpenGLState ) -> bool
 {
-    gridShader := GRID_SHADER;
+    // Embed shader text as a here-string
+    gridShader := #insert -> string
+    {
+        shaderText := read_entire_file( tprint( "src/shaders/%", GRID_SHADER_FILENAME ) );
+
+        builder: String_Builder;
+        print_to_builder(*builder, "#string END\n%\nEND;", shaderText );
+        return builder_to_string(*builder);
+    }
 
 #if BUILD_CONFIG != .Release
 {
-    path := tprint( "src/%", GRID_SHADER_FILENAME );
+    path := tprint( "src/shaders/%", GRID_SHADER_FILENAME );
     if file_exists( path )
-        gridShader = read_entire_file( path, zero_terminated = true );
+        gridShader = read_entire_file( path );
 }
 
     //builder: String_Builder;

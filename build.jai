@@ -42,10 +42,6 @@ build :: ()
     }
 
     configStr := tprint( "BUILD_CONFIG :: BuildConfig.%;\n", config );
-    // Build string for embedding the grid shader
-    // TODO Doesnt look like we really care about zero terminating this does it
-    gridShader := read_entire_file( tprint( "src/%", GRID_SHADER_FILENAME ), zero_terminated = true );
-    shaderStr := tprint( "GRID_SHADER :: #string END\n%\nEND;", gridShader );
 
     if build_release
     {
@@ -161,6 +157,7 @@ build :: ()
 
 
     // Main msg loop for all workspaces
+    // TODO Atm this is only necessary if do_dist still equals true
     completed := 0;
     while true
     {
@@ -183,14 +180,6 @@ build :: ()
                     }
                 }
 
-            case .FILE;
-                file := cast(*Message_File) message;
-                if ends_with( file.fully_pathed_filename, "opengl.jai" )
-                    add_build_string( shaderStr, message.workspace, file );
-
-            // NOTE Atm we only care about adding strings precisely to the workspaces
-            // in 'distWorkspaces', which we wait for here, but in the future that
-            // may no longer be the case, so we may need to wait for all of them instead..
             case .COMPLETE;
                 completed += 1;
                 if completed >= distWorkspaces.count
