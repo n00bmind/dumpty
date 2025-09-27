@@ -9,6 +9,7 @@
 
 // The whole idea with using this instead of a vanilla cmd.exe plus a couple pipes is that this shell auto-translates
 // any Windows Console API calls into the (hopefully) equivalent VT codes..
+// And also, crucially, that any child processes of cmd.exe identify that they're running in a "true" tty.
 // The main drawback of that is that debugging 100 VT codes in the output all at once is akin to visiting Dante's inferno.
 // Oh, and based on the first few impressions, it also appears to be hideously slow.
 CmdPtyShellAsync :: struct
@@ -33,6 +34,9 @@ CmdPtyShellAsync :: struct
 #import "Windows";
 #import "Windows_Utf8";
 System :: #import "System";
+
+#load "platform/win32.jai";
+
 
 CmdPtyShellStart :: ( base: *Shell ) -> bool
 {
@@ -441,13 +445,11 @@ ReadPipe :: ( shell: *CmdPtyShellAsync, buffer: [] u8 ) -> success: bool, bytesR
 //// Win32 crap
 
 NULL :: cast(*void) 0;
-WCHAR :: u16;
 USHORT :: u16;
 ULONG :: u32;
 ACCESS_MASK :: DWORD;
 DWORD_PTR :: u64;
 ULONG_PTR :: u64;
-PWSTR :: *WCHAR;
 HPCON :: *void;
 
 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE :: 131094;
@@ -461,13 +463,6 @@ FILE_PIPE_BYTE_STREAM_MODE :: 0x00000000;
 FILE_PIPE_QUEUE_OPERATION :: 0x00000000;
 FILE_NON_DIRECTORY_FILE :: 0x00000040;
 FILE_SYNCHRONOUS_IO_NONALERT :: 0x00000020;
-
-UNICODE_STRING :: struct
-{
-    Length: USHORT;
-    MaximumLength: USHORT;
-    Buffer: PWSTR;
-}
 
 proc_thread_attr :: struct
 {
@@ -500,19 +495,6 @@ IO_STATUS_BLOCK :: struct
     }
     Information: ULONG_PTR;
 }
-
-OBJECT_ATTRIBUTES :: struct
-{
-    Length: ULONG;
-    RootDirectory: HANDLE;
-    ObjectName: *UNICODE_STRING;
-    Attributes: ULONG;
-    SecurityDescriptor: *void;
-    SecurityQualityOfService: *void;
-}
-
-kernel32 :: #system_library "kernel32";
-ntdll :: #system_library "ntdll";
 
 CreatePseudoConsole     :: ( size: COORD, input: HANDLE, output: HANDLE, flags: DWORD,
                              ret: *HPCON ) -> HRESULT #foreign kernel32;

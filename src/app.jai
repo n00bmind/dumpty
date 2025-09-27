@@ -9,8 +9,8 @@ AppInit :: ( memory: *AppMemory, renderer: *RendererState )
         memory.initialized = true;
 
         appState := cast(*AppState) memory.appState;
-        appState.shell = CreateShell();
-        // appState.shell = New( CmdPtyShellAsync );
+        // appState.shell = CreateShell();
+        appState.shell = New( CmdHostedShell );
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );

@@ -229,6 +229,7 @@ main :: ()
     #import "Windows";
 }
 
+#load "platform/win32.jai";
 #load "interface.jai";
 #load "opengl.jai";
 
@@ -384,8 +385,6 @@ Swap :: ( window: Window_Type, vsync := true )
 ole32    :: #system_library "ole32";
 shell32  :: #system_library "shell32";
 
-WCHAR :: u16;
-PWSTR :: *WCHAR;
 KNOWNFOLDERID :: GUID;
 REFKNOWNFOLDERID :: *KNOWNFOLDERID;
 
