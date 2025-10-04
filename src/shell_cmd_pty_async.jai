@@ -35,8 +35,6 @@ CmdPtyShellAsync :: struct
 #import "Windows_Utf8";
 System :: #import "System";
 
-#load "platform/win32.jai";
-
 
 CmdPtyShellStart :: ( base: *Shell ) -> bool
 {
@@ -444,26 +442,6 @@ ReadPipe :: ( shell: *CmdPtyShellAsync, buffer: [] u8 ) -> success: bool, bytesR
 
 //// Win32 crap
 
-NULL :: cast(*void) 0;
-USHORT :: u16;
-ULONG :: u32;
-ACCESS_MASK :: DWORD;
-DWORD_PTR :: u64;
-ULONG_PTR :: u64;
-HPCON :: *void;
-
-PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE :: 131094;
-OBJ_CASE_INSENSITIVE :: 0x00000040;
-SYNCHRONIZE :: 0x00100000;
-FILE_WRITE_ATTRIBUTES :: 0x100;
-FILE_OPEN :: 0x00000001;
-FILE_CREATE :: 0x00000002;
-FILE_PIPE_BYTE_STREAM_TYPE :: 0x00000000;
-FILE_PIPE_BYTE_STREAM_MODE :: 0x00000000;
-FILE_PIPE_QUEUE_OPERATION :: 0x00000000;
-FILE_NON_DIRECTORY_FILE :: 0x00000040;
-FILE_SYNCHRONOUS_IO_NONALERT :: 0x00000020;
-
 proc_thread_attr :: struct
 {
     attr: DWORD_PTR;
@@ -485,15 +463,6 @@ STARTUPINFOEXW :: struct
 {
     StartupInfo: STARTUPINFOW;
     lpAttributeList: *PROC_THREAD_ATTRIBUTE_LIST;
-}
-
-IO_STATUS_BLOCK :: struct
-{
-    union {
-        Status: NTSTATUS;
-        Pointer: *void;
-    }
-    Information: ULONG_PTR;
 }
 
 CreatePseudoConsole     :: ( size: COORD, input: HANDLE, output: HANDLE, flags: DWORD,

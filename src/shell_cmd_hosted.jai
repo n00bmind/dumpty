@@ -27,7 +27,6 @@ CmdHostedShell :: struct
 // #import "Windows_Utf8";
 // System :: #import "System";
 
-#load "platform/win32.jai";
 
 // TODO TODO Error handling
 CmdHostedShellStart :: ( base: *Shell ) -> bool
@@ -38,7 +37,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     refHandle: HANDLE;
     CreateClientHandle( *refHandle, shell.serverHandle, "\\Reference", .FALSE );
 
-    shell.inputEventHandle = CreateEventExW( 0, 0, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
+    shell.inputEventHandle = CreateEventExW( NULL, NULL, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
 
     bytes: DWORD;
     serverInfo: CD_IO_SERVER_INFORMATION;
@@ -56,7 +55,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     DuplicateHandle( GetCurrentProcess(), clientHandles[1], GetCurrentProcess(), *clientHandles[2], 0, .TRUE,
                      DUPLICATE_SAME_ACCESS );
 
-    si: STARTUPINFOEXW si;
+    si: STARTUPINFOEXW;
     si.StartupInfo.cb = size_of(STARTUPINFOEXW);
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.StartupInfo.hStdInput = clientHandles[0];

@@ -368,9 +368,11 @@ IsRunning :: ( process: Process ) -> bool
 #import "System";
 #load "interface.jai";
 #load "util.jai";
+#load "platform/win32.jai";
 #load "shell_cmd.jai";
 #load "shell_cmd_pty.jai";
 #load "shell_cmd_pty_async.jai";
+#load "shell_cmd_hosted.jai";
 #load "glyph_cache.jai";
 
 // TODO May want to call PrepareGlyphTiles indirectly so we can remove this coupling

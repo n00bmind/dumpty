@@ -26,8 +26,8 @@ Arguments:
 Return Value:
 - NTSTATUS indicating if the handle was successfully created.
 --*/
-CreateHandle :: ( handleOut: PHANDLE, deviceName: string, desiredAccess: ACCESS_MASK, parent: HANDLE , inheritable: BOOLEAN,
-                  openOptions: ULONG ) -> NTSTATUS
+CreateHandle :: ( handleOut: PHANDLE, deviceName: string, desiredAccess: ACCESS_MASK,
+                  parent: HANDLE , inheritable: BOOLEAN, openOptions: ULONG ) -> NTSTATUS
 {
     flags: ULONG = OBJ_CASE_INSENSITIVE;
 
@@ -38,19 +38,19 @@ CreateHandle :: ( handleOut: PHANDLE, deviceName: string, desiredAccess: ACCESS_
 
     name: UNICODE_STRING;
     name.Buffer = cast(PWSTR) wideStr;
-    name.Length = (USHORT) lenBytes;
+    name.Length = cast(USHORT) lenBytes;
     name.MaximumLength = name.Length + size_of(WCHAR);
 
     objectAttributes: OBJECT_ATTRIBUTES;
-    InitializeObjectAttributes( *objectAttributes, *name, flags, parent, 0 );
+    InitializeObjectAttributes( *objectAttributes, *name, flags, parent, NULL );
 
     ioStatus: IO_STATUS_BLOCK;
     return NtOpenFile( handleOut, desiredAccess, *objectAttributes, *ioStatus,
                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, openOptions );
 }
 
-InitializeObjectAttributes :: ( p: POBJECT_ATTRIBUTES, n: PUNICODE_STRING, a: ULONG, r: HANDLE,
-                                s: PSECURITY_DESCRIPTOR )
+InitializeObjectAttributes :: ( p: POBJECT_ATTRIBUTES, n: PUNICODE_STRING, a: ULONG,
+                                r: HANDLE, s: PSECURITY_DESCRIPTOR )
 {
   p.Length = size_of(OBJECT_ATTRIBUTES);
   p.RootDirectory = r;
@@ -76,10 +76,11 @@ Arguments:
 Return Value:
 - NTSTATUS indicating if the client was successfully created.
 --*/
-CreateClientHandle :: ( handleOut: PHANDLE, serverHandle: HANDLE, name: PCWSTR, inheritable: BOOLEAN ) -> NTSTATUS
+CreateClientHandle :: ( handleOut: PHANDLE, serverHandle: HANDLE, name: string,
+                        inheritable: BOOLEAN ) -> NTSTATUS
 {
-    return CreateHandle( handleOut, name, GENERIC_WRITE | GENERIC_READ | SYNCHRONIZE, serverHandle, inheritable,
-                         FILE_SYNCHRONOUS_IO_NONALERT );
+    return CreateHandle( handleOut, name, GENERIC_WRITE | GENERIC_READ | SYNCHRONIZE,
+                         serverHandle, inheritable, FILE_SYNCHRONOUS_IO_NONALERT );
 }
 
 /*++
@@ -95,16 +96,43 @@ Return Value:
 --*/
 CreateServerHandle :: ( handleOut: PHANDLE, inheritable: BOOLEAN ) -> NTSTATUS
 {
-    return CreateHandle( handleOut, WideStrTmp( "\\Device\\ConDrv\\Server" ), GENERIC_ALL, 0, inheritable, 0 );
+    return CreateHandle( handleOut, "\\Device\\ConDrv\\Server", GENERIC_ALL, NULL,
+                         inheritable, 0 );
 }
 
 
 
 
-WCHAR :: u16;
-PWSTR :: *WCHAR;
-PCWSTR :: *WCHAR; // const
-PHANDLE :: *HANDLE;
+NULL                                :: cast(*void) 0;
+UCHAR                               :: u8;
+USHORT                              :: u16;
+ULONG                               :: u32;
+WCHAR                               :: u16;
+PWSTR                               :: *WCHAR;
+PCWSTR                              :: *WCHAR; // const
+DWORD_PTR                           :: u64;
+ULONG_PTR                           :: u64;
+PHANDLE                             :: *HANDLE;
+ACCESS_MASK                         :: DWORD;
+HPCON                               :: *void;
+
+
+OBJ_INHERIT                         :: 0x00000002;
+OBJ_CASE_INSENSITIVE                :: 0x00000040;
+SYNCHRONIZE                         :: 0x00100000;
+PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE :: 131094;
+FILE_WRITE_ATTRIBUTES               :: 0x100;
+FILE_OPEN                           :: 0x00000001;
+FILE_CREATE                         :: 0x00000002;
+FILE_PIPE_BYTE_STREAM_TYPE          :: 0x00000000;
+FILE_PIPE_BYTE_STREAM_MODE          :: 0x00000000;
+FILE_PIPE_QUEUE_OPERATION           :: 0x00000000;
+FILE_NON_DIRECTORY_FILE             :: 0x00000040;
+FILE_SYNCHRONOUS_IO_NONALERT        :: 0x00000020;
+CREATE_EVENT_MANUAL_RESET           :: 0x1;
+EVENT_ALL_ACCESS                    :: 0x1F0003;
+
+
 
 UNICODE_STRING :: struct
 {
@@ -125,6 +153,32 @@ OBJECT_ATTRIBUTES :: struct
 }
 POBJECT_ATTRIBUTES :: *OBJECT_ATTRIBUTES;
 
+IO_STATUS_BLOCK :: struct
+{
+    union {
+        Status: NTSTATUS;
+        Pointer: *void;
+    }
+    Information: ULONG_PTR;
+}
+PIO_STATUS_BLOCK :: *IO_STATUS_BLOCK;
+
+SECURITY_DESCRIPTOR :: struct
+{
+    Revision: UCHAR;
+    Sbz1: UCHAR;
+    Control: USHORT;
+    Owner: ULONG;
+    Group: ULONG;
+    Sacl: ULONG;
+    Dacl: ULONG;
+}
+PSECURITY_DESCRIPTOR :: *SECURITY_DESCRIPTOR;
+
+
+// Conhost stuff
+#load "condrv.jai"
+
 
 ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
@@ -134,3 +188,7 @@ NtOpenFile :: ( FileHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttribute
 
 DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWORD, out_buff: *void, out_count: DWORD,
                      returned: *DWORD, overlapped: *OVERLAPPED ) -> BOOL #foreign kernel32;
+
+CreateEventExW :: ( sa: *SECURITY_ATTRIBUTES, name: PCWSTR, flags: DWORD, access: DWORD )
+                    -> HANDLE #foreign kernel32;
+
