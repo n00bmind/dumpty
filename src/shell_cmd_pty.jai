@@ -209,34 +209,8 @@ CmdPtyShellGetWaitableHandles :: ( base: *Shell, handles: [] HANDLE, handleCount
 }
 
 
-NULL :: cast(*void) 0;
 HPCON :: *void;
-DWORD_PTR :: s64;
-
 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE :: 131094;
-
-proc_thread_attr :: struct
-{
-    attr: DWORD_PTR;
-    size: SIZE_T;
-    value: *void;
-}
- 
-PROC_THREAD_ATTRIBUTE_LIST :: struct
-{
-    mask: DWORD;  /* bitmask of items in list */
-    size: DWORD;  /* max number of items in list */
-    count: DWORD; /* number of items in list */
-    pad: DWORD;
-    unk: DWORD_PTR;
-    attrs: [1] proc_thread_attr;
-}
-
-STARTUPINFOEXA :: struct
-{
-    StartupInfo: STARTUPINFOA;
-    lpAttributeList: *PROC_THREAD_ATTRIBUTE_LIST;
-}
 
 
 kernel32 :: #system_library "kernel32";

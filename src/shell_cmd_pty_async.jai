@@ -442,41 +442,11 @@ ReadPipe :: ( shell: *CmdPtyShellAsync, buffer: [] u8 ) -> success: bool, bytesR
 
 //// Win32 crap
 
-proc_thread_attr :: struct
-{
-    attr: DWORD_PTR;
-    size: SIZE_T;
-    value: *void;
-}
- 
-PROC_THREAD_ATTRIBUTE_LIST :: struct
-{
-    mask: DWORD;  /* bitmask of items in list */
-    size: DWORD;  /* max number of items in list */
-    count: DWORD; /* number of items in list */
-    pad: DWORD;
-    unk: DWORD_PTR;
-    attrs: [1] proc_thread_attr;
-}
-
-STARTUPINFOEXW :: struct
-{
-    StartupInfo: STARTUPINFOW;
-    lpAttributeList: *PROC_THREAD_ATTRIBUTE_LIST;
-}
-
 CreatePseudoConsole     :: ( size: COORD, input: HANDLE, output: HANDLE, flags: DWORD,
                              ret: *HPCON ) -> HRESULT #foreign kernel32;
 // Only available on Windows 11 build 26100
 // ReleasePseudoConsole    :: ( hPC: HPCON ) -> HRESULT #foreign kernel32;
 ClosePseudoConsole      :: ( hPC: HPCON ) -> void #foreign kernel32;
-
-InitializeProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, count: DWORD,
-                                       flags: DWORD, size: *SIZE_T ) -> BOOL #foreign kernel32;
-UpdateProcThreadAttribute :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, flags: DWORD,
-                               attr: DWORD_PTR, value: *void, size: SIZE_T,
-                               prev_ret: *void, size_ret: *SIZE_T ) -> BOOL #foreign kernel32;
-DeleteProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST ) -> void #foreign kernel32;
 
 NtCreateFile :: ( FileHandle: *HANDLE,
                   DesiredAccess: ACCESS_MASK,
@@ -490,6 +460,7 @@ NtCreateFile :: ( FileHandle: *HANDLE,
                   EaBuffer: *void,
                   EaLength: ULONG 
                 ) -> NTSTATUS #foreign ntdll;
+
 NtCreateNamedPipeFile :: ( FileHandle: *HANDLE,
                            DesiredAccess: ACCESS_MASK,
                            ObjectAttributes: *OBJECT_ATTRIBUTES,

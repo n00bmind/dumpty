@@ -17,7 +17,7 @@ CmdHostedShell :: struct
     // consoleHandle: HPCON;
     // pipeHandle: HANDLE;
     // pipeOverlapped: *OVERLAPPED;
-    // eof: bool;
+    eof: bool;
 }
 
 
@@ -43,9 +43,9 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     serverInfo: CD_IO_SERVER_INFORMATION;
     serverInfo.InputAvailableEvent = shell.inputEventHandle;
     DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_SET_SERVER_INFORMATION, *serverInfo, size_of(CD_IO_SERVER_INFORMATION),
-                     0, 0, *bytes, 0 );
+                     NULL, 0, *bytes, NULL );
 
-    server.ioThreadHandle = CreateThread( 0, 0, ConsoleIoThread, 0, 0, 0 );
+    shell.ioThreadHandle = CreateThread( NULL, 0, xx ConsoleIoThread, shell, 0, NULL );
 
     // This should be enough for Conhost setup
 
@@ -64,7 +64,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
 
     attrSize: SIZE_T;
     InitializeProcThreadAttributeList( NULL, 2, 0, *attrSize );
-    si.lpAttributeList = cast(LPPROC_THREAD_ATTRIBUTE_LIST) alloc( attrSize );
+    si.lpAttributeList = cast(PPROC_THREAD_ATTRIBUTE_LIST) alloc( xx attrSize );
     InitializeProcThreadAttributeList( si.lpAttributeList, 2, 0, *attrSize );
     /*
     hr = UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, con, size_of(con), NULL, NULL);
@@ -72,14 +72,14 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     */
     UpdateProcThreadAttribute( si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_CONSOLE_REFERENCE, *refHandle, size_of(HANDLE),
                                NULL, NULL );
-    UpdateProcThreadAttribute( si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, clientHandles,
+    UpdateProcThreadAttribute( si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, clientHandles.data,
                                size_of(type_of(clientHandles)), NULL, NULL );
 
     cmd := WideStrTmp( "cmd.exe" );
     // cmd := WideStrTmp( "C:\\Windows\\System32\\cmd.exe" );
 
     pi: PROCESS_INFORMATION;
-    ok := CreateProcessW( NULL, cmd, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, *si.StartupInfo, *pi );
+    ok := CreateProcessW( NULL, cmd, NULL, NULL, .TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, *si.StartupInfo, *pi );
     // Assert(ok);
 
     CloseHandle( pi.hThread );
@@ -89,4 +89,64 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     CloseHandle( clientHandles[0] );
     CloseHandle( clientHandles[1] );
     CloseHandle( clientHandles[2] );
+
+    return true;
+}
+
+ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
+{
+    shell: *CmdHostedShell = xx lpParameter;
+
+    send_io_complete := false;
+    io_complete: CD_IO_COMPLETE;
+    ReceiveMsg: CONSOLE_API_MSG;
+    BytesRead: DWORD;
+
+    while !shell.eof
+    {
+        // TODO Check ConsoleIoThread in terminal/src/host/srvinit.cpp
+        // if (ReplyMsg != nullptr)
+        //     ReplyMsg->ReleaseMessageBuffers();
+
+        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete *io_complete else null,
+                               ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
+                               *BytesRead, NULL );
+
+        if !ok
+        {
+            // TODO Test all this HRESULT malarkey
+            // hr := GetLastErrorAsHr();
+            err := GetLastError();
+
+            if err == ERROR_IO_PENDING
+                WaitForSingleObjectEx( shell.serverHandle, 0, .FALSE );
+            else
+            {
+                if err == ERROR_PIPE_NOT_CONNECTED
+                {
+                    shell.eof = true;
+                    return 0;
+                }
+                else
+                {
+                    log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
+                    return 1;
+                }
+            }
+        }
+
+        // We got some command
+
+        send_io_complete = false;
+        memset( *io_complete, 0, size_of(CD_IO_COMPLETE) );
+        io_complete.Identifier = ReceiveMsg.Descriptor.Identifier;
+
+        log( "CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
+        // if ReceiveMsg.Descriptor.Function ==
+        // {
+        //
+        // }
+    }
+
+    return 0;
 }

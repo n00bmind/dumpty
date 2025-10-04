@@ -1,6 +1,20 @@
 
 //// Some utilities
 
+HRESULT_FROM_WIN32 :: inline ( x: u32 ) -> HRESULT
+{ 
+    FACILITY_WIN32 :: 0x0007;
+
+    return ifx cast(HRESULT) x <= 0
+        then cast(HRESULT) x
+        else cast(HRESULT) ((x & 0x0000FFFF) | (FACILITY_WIN32 << 16) | 0x80000000);
+}
+
+GetLastErrorAsHr :: inline () -> HRESULT
+{
+    return HRESULT_FROM_WIN32( GetLastError() );
+}
+
 WideStrTmp :: ( s: string ) -> PCWSTR, lenBytes: s32
 {
     result, success, lenBytes := utf8_to_wide( s,, temp );
@@ -127,11 +141,12 @@ FILE_CREATE                         :: 0x00000002;
 FILE_PIPE_BYTE_STREAM_TYPE          :: 0x00000000;
 FILE_PIPE_BYTE_STREAM_MODE          :: 0x00000000;
 FILE_PIPE_QUEUE_OPERATION           :: 0x00000000;
-FILE_NON_DIRECTORY_FILE             :: 0x00000040;
 FILE_SYNCHRONOUS_IO_NONALERT        :: 0x00000020;
+FILE_NON_DIRECTORY_FILE             :: 0x00000040;
 CREATE_EVENT_MANUAL_RESET           :: 0x1;
 EVENT_ALL_ACCESS                    :: 0x1F0003;
-
+DUPLICATE_SAME_ACCESS               :: 0x00000002;
+ERROR_PIPE_NOT_CONNECTED            :: 233;
 
 
 UNICODE_STRING :: struct
@@ -175,6 +190,36 @@ SECURITY_DESCRIPTOR :: struct
 }
 PSECURITY_DESCRIPTOR :: *SECURITY_DESCRIPTOR;
 
+proc_thread_attr :: struct
+{
+    attr: DWORD_PTR;
+    size: SIZE_T;
+    value: *void;
+}
+ 
+PROC_THREAD_ATTRIBUTE_LIST :: struct
+{
+    mask: DWORD;  /* bitmask of items in list */
+    size: DWORD;  /* max number of items in list */
+    count: DWORD; /* number of items in list */
+    pad: DWORD;
+    unk: DWORD_PTR;
+    attrs: [1] proc_thread_attr;
+}
+PPROC_THREAD_ATTRIBUTE_LIST :: *PROC_THREAD_ATTRIBUTE_LIST;
+
+STARTUPINFOEXA :: struct
+{
+    StartupInfo: STARTUPINFOA;
+    lpAttributeList: *PROC_THREAD_ATTRIBUTE_LIST;
+}
+
+STARTUPINFOEXW :: struct
+{
+    StartupInfo: STARTUPINFOW;
+    lpAttributeList: *PROC_THREAD_ATTRIBUTE_LIST;
+}
+
 
 ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
@@ -187,6 +232,19 @@ DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWOR
 
 CreateEventExW :: ( sa: *SECURITY_ATTRIBUTES, name: PCWSTR, flags: DWORD, access: DWORD )
                     -> HANDLE #foreign kernel32;
+
+DuplicateHandle :: ( hSourceProcessHandle: HANDLE, hSourceHandle: HANDLE, hTargetProcessHandle: HANDLE,
+                     lpTargetHandle: PHANDLE, dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwOptions: DWORD )
+                     -> BOOL #foreign kernel32;
+
+InitializeProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, count: DWORD,
+                                        flags: DWORD, size: *SIZE_T ) -> BOOL #foreign kernel32;
+
+UpdateProcThreadAttribute :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, flags: DWORD,
+                                attr: DWORD_PTR, value: *void, size: SIZE_T,
+                                prev_ret: *void, size_ret: *SIZE_T ) -> BOOL #foreign kernel32;
+
+DeleteProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST ) -> void #foreign kernel32;
 
 
 // Conhost stuff
