@@ -52,12 +52,12 @@ CreateHandle :: ( handleOut: PHANDLE, deviceName: string, desiredAccess: ACCESS_
 InitializeObjectAttributes :: ( p: POBJECT_ATTRIBUTES, n: PUNICODE_STRING, a: ULONG,
                                 r: HANDLE, s: PSECURITY_DESCRIPTOR )
 {
-  p.Length = size_of(OBJECT_ATTRIBUTES);
-  p.RootDirectory = r;
-  p.ObjectName = n;
-  p.Attributes = a;
-  p.SecurityDescriptor = s;
-  p.SecurityQualityOfService = NULL;
+    p.Length = size_of(OBJECT_ATTRIBUTES);
+    p.RootDirectory = r;
+    p.ObjectName = n;
+    p.Attributes = a;
+    p.SecurityDescriptor = s;
+    p.SecurityQualityOfService = NULL;
 }
 
 /*++
@@ -176,10 +176,6 @@ SECURITY_DESCRIPTOR :: struct
 PSECURITY_DESCRIPTOR :: *SECURITY_DESCRIPTOR;
 
 
-// Conhost stuff
-#load "condrv.jai"
-
-
 ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
 
@@ -191,4 +187,8 @@ DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWOR
 
 CreateEventExW :: ( sa: *SECURITY_ATTRIBUTES, name: PCWSTR, flags: DWORD, access: DWORD )
                     -> HANDLE #foreign kernel32;
+
+
+// Conhost stuff
+#load "win32_conhost.jai";
 
