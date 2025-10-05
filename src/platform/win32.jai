@@ -118,17 +118,22 @@ CreateServerHandle :: ( handleOut: PHANDLE, inheritable: BOOLEAN ) -> NTSTATUS
 
 
 NULL                                :: cast(*void) 0;
+BYTE                                :: u8;
 UCHAR                               :: u8;
 USHORT                              :: u16;
 ULONG                               :: u32;
 WCHAR                               :: u16;
 PWSTR                               :: *WCHAR;
 PCWSTR                              :: *WCHAR; // const
+PVOID                               :: *void;
+PVOID64                             :: *void;
 DWORD_PTR                           :: u64;
 ULONG_PTR                           :: u64;
 PHANDLE                             :: *HANDLE;
 ACCESS_MASK                         :: DWORD;
 HPCON                               :: *void;
+HPALETTE                            :: *void;
+LANGID                              :: USHORT;
 
 
 OBJ_INHERIT                         :: 0x00000002;
@@ -223,12 +228,10 @@ STARTUPINFOEXW :: struct
 
 ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
+user32 :: #system_library "user32";
 
 NtOpenFile :: ( FileHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES,
                 IoStatusBlock: PIO_STATUS_BLOCK, ShareAccess: ULONG, OpenOptions: ULONG ) -> NTSTATUS #foreign ntdll;
-
-DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWORD, out_buff: *void, out_count: DWORD,
-                     returned: *DWORD, overlapped: *OVERLAPPED ) -> BOOL #foreign kernel32;
 
 CreateEventExW :: ( sa: *SECURITY_ATTRIBUTES, name: PCWSTR, flags: DWORD, access: DWORD )
                     -> HANDLE #foreign kernel32;
@@ -246,6 +249,10 @@ UpdateProcThreadAttribute :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, flags: DWORD,
 
 DeleteProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST ) -> void #foreign kernel32;
 
+WaitForSingleObjectEx :: ( hHandle: HANDLE, dwMilliseconds: DWORD, bAlertable: BOOL ) -> DWORD #foreign kernel32;
+
+DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWORD, out_buff: *void, out_count: DWORD,
+                     returned: *DWORD, overlapped: *OVERLAPPED ) -> BOOL #foreign kernel32;
 
 // Conhost stuff
 #load "win32_conhost.jai";

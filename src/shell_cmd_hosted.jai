@@ -7,8 +7,10 @@ CmdHostedShell :: struct
     base.startProc              = CmdHostedShellStart;
     // base.shutdownProc           = CmdHostedShellShutdown;
     // base.writeProc              = CmdHostedShellWrite;
-    // base.readProc               = CmdHostedShellRead;
+    base.readProc               = CmdHostedShellRead;
     // base.getWaitableHandlesProc = CmdHostedShellGetWaitableHandles;
+
+    consoleControl : #type ( Command: CONSOLECONTROL, Information: PVOID, Length: DWORD ) -> NTSTATUS #c_call;
 
     serverHandle: HANDLE;
     ioThreadHandle: HANDLE;
@@ -17,7 +19,18 @@ CmdHostedShell :: struct
     // consoleHandle: HPCON;
     // pipeHandle: HANDLE;
     // pipeOverlapped: *OVERLAPPED;
+
+    input_console_mode: ULONG = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT
+                              | ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS | ENABLE_AUTO_POSITION;
+    output_console_mode: ULONG = ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT;
     eof: bool;
+
+    // Incoming data from the shell will be in utf16, so we cant avoid (at least) a copy + conversion
+    // (ansi requires *2* conversions, first to utf16 and then to utf8)
+    // TODO Is that actually true!?
+    stagingBuffer: [] u8;
+    outputBuffer: [] u8;
+    outputByteCount: s64;
 }
 
 
@@ -33,6 +46,13 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
 {
     shell: *CmdHostedShell = xx base;
 
+    shell.consoleControl = xx GetProcAddress( LoadLibraryExA( "user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 ),
+                                              "ConsoleControl" );
+    assert( shell.consoleControl != null && "Failed retrieving entrypoint 'ConsoleControl' from user32.dll" );
+
+    // TODO See if we can do raw ingest without an extra copy
+    shell.outputBuffer = NewArray( 1024 * 1024, u8 );
+
     CreateServerHandle( *shell.serverHandle, .FALSE );
     refHandle: HANDLE;
     CreateClientHandle( *refHandle, shell.serverHandle, "\\Reference", .FALSE );
@@ -42,8 +62,13 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     bytes: DWORD;
     serverInfo: CD_IO_SERVER_INFORMATION;
     serverInfo.InputAvailableEvent = shell.inputEventHandle;
-    DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_SET_SERVER_INFORMATION, *serverInfo, size_of(CD_IO_SERVER_INFORMATION),
-                     NULL, 0, *bytes, NULL );
+    ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_SET_SERVER_INFORMATION, *serverInfo,
+                           size_of(CD_IO_SERVER_INFORMATION), NULL, 0, *bytes, NULL );
+    if !ok
+    {
+        log_error( "CONDRV_SET_SERVER_INFORMATION failed: %\n", get_error_value_and_string() );
+        return false;
+    }
 
     shell.ioThreadHandle = CreateThread( NULL, 0, xx ConsoleIoThread, shell, 0, NULL );
 
@@ -79,7 +104,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     // cmd := WideStrTmp( "C:\\Windows\\System32\\cmd.exe" );
 
     pi: PROCESS_INFORMATION;
-    ok := CreateProcessW( NULL, cmd, NULL, NULL, .TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, *si.StartupInfo, *pi );
+    ok = CreateProcessW( NULL, cmd, NULL, NULL, .TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, *si.StartupInfo, *pi );
     // Assert(ok);
 
     CloseHandle( pi.hThread );
@@ -108,8 +133,9 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
         // if (ReplyMsg != nullptr)
         //     ReplyMsg->ReleaseMessageBuffers();
 
-        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete *io_complete else null,
-                               ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
+        // Read next command and optionally send result of the last one
+        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete then *io_complete else null,
+                               xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
                                *BytesRead, NULL );
 
         if !ok
@@ -129,7 +155,10 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 }
                 else
                 {
-                    log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
+                    push_context
+                    {
+                        log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
+                    }
                     return 1;
                 }
             }
@@ -141,12 +170,250 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
         memset( *io_complete, 0, size_of(CD_IO_COMPLETE) );
         io_complete.Identifier = ReceiveMsg.Descriptor.Identifier;
 
-        log( "CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
-        // if ReceiveMsg.Descriptor.Function ==
-        // {
-        //
-        // }
+        // Looks like these are just for ourself
+        INPUT_HANDLE  :: 123;
+        OUTPUT_HANDLE :: 456;
+
+
+        if ReceiveMsg.Descriptor.Function ==
+        {
+            case CONSOLE_IO_CONNECT;
+            {
+                data: CONSOLE_SERVER_MSG;
+
+                op: CD_IO_OPERATION;
+                op.Identifier = ReceiveMsg.Descriptor.Identifier;
+                op.Buffer.Offset = 0;
+                op.Buffer.Data = *data;
+                op.Buffer.Size = size_of(CONSOLE_SERVER_MSG);
+
+                ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *op, size_of(CD_IO_OPERATION), NULL, 0,
+                                      *BytesRead, NULL );
+                if !ok
+                    push_context
+                    {
+                        log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+                        return 1;
+                    }
+
+                    // TODO Register process info
+                // Assert(process_count < sizeof(processes) / sizeof(processes[0]));
+                // processes[process_count++] = (HANDLE)ReceiveMsg.Descriptor.Process;
+                //
+                     // TODO Set window title
+                // if (data.Title && process_count == 1) {
+                //     memcpy(console_title, data.Title, min((size_t)data.TitleLength + 1, sizeof(console_title)));
+                //     console_title[sizeof(console_title) / sizeof(console_title[0]) - 1] = 0;
+                // }
+
+                if data.ConsoleApp
+                {
+                    cpi: CONSOLE_PROCESS_INFO;
+                    cpi.dwProcessID = cast(DWORD) ReceiveMsg.Descriptor.Process;
+                    cpi.dwFlags = CPI_NEWPROCESSWINDOW;
+
+                    status := shell.consoleControl( .ConsoleNotifyConsoleApplication, *cpi, size_of(CONSOLE_PROCESS_INFO) );
+                    if status != STATUS_SUCCESS
+                        push_context
+                        {
+                            // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
+                            log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
+                            return 1;
+                        }
+                }
+                // todo: allocate new console if not created before
+                // todo: notify OS that app is foreground
+                // todo: create IO handles?
+
+                // Reply with success
+                connect_info: CD_CONNECTION_INFORMATION;
+                connect_info.Input = INPUT_HANDLE;
+                connect_info.Output = OUTPUT_HANDLE;
+                connect_info.Process = ReceiveMsg.Descriptor.Process;
+
+                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                io_complete.IoStatus.Information = size_of(CD_CONNECTION_INFORMATION);
+                io_complete.Write.Data = *connect_info;
+                io_complete.Write.Size = size_of(CD_CONNECTION_INFORMATION);
+                ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_COMPLETE_IO, *io_complete, size_of(CD_IO_COMPLETE),
+                                      NULL, 0, *BytesRead, NULL );
+                if !ok
+                    push_context
+                    {
+                        log_error( "CONDRV_COMPLETE_IO failed: %\n", get_error_value_and_string() );
+                        return 1;
+                    }
+            }
+
+            // TODO 
+            // case CONSOLE_IO_DISCONNECT;
+            // case CONSOLE_IO_CREATE_OBJECT;
+            // case CONSOLE_IO_RAW_READ;
+
+            case CONSOLE_IO_RAW_WRITE;
+            {
+                send_io_complete = true;
+                if ReceiveMsg.Descriptor.Object == OUTPUT_HANDLE
+                {
+                    memset( *ReceiveMsg.u.consoleMsgL1.WriteConsole, 0, size_of(CONSOLE_WRITECONSOLE_MSG) );
+                    // Required for Wait blocks to identify the right callback.
+                    ReceiveMsg.msgHeader.ApiNumber = API_NUMBER_WRITECONSOLE;
+                    ReceiveMsg.msgHeader.ApiDescriptorSize = 0;
+
+                    status := HandleWriteMessage( shell, *ReceiveMsg, *io_complete );
+                    // TODO There's a whole thing with a 'ReplyPending' state that can be returned from
+                    // ApiDispatchers::ServerWriteConsole, but I dont think we care about any of that crap?
+                    /*
+                    if (hr == STATUS_TIMEOUT) {
+                        send_io_complete = false;
+                        delayed_io_msg = ReceiveMsg;
+                        has_delayed_io_msg = true;
+                    } else {*/
+                    io_complete.IoStatus.Status = status;
+                    //}
+                }
+                // else
+                // TODO Shouldnt we at least indicate failure in the response?
+
+            }
+
+            case CONSOLE_IO_USER_DEFINED;
+            {
+                LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24) - 1;
+                ApiNumber: ULONG = ReceiveMsg.msgHeader.ApiNumber & 0xffffff;
+
+                // Default is reply with failure
+                send_io_complete = true;
+                io_complete.IoStatus.Status = STATUS_UNSUCCESSFUL;
+                io_complete.Write.Data = *ReceiveMsg.u;
+                io_complete.Write.Size = ReceiveMsg.msgHeader.ApiDescriptorSize;
+
+                if LayerNumber ==
+                {
+                    case 0;
+                    {
+                        l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
+                        if l1_type ==
+                        {
+                            // TODO 
+                            
+                            case .Api_GetConsoleMode;
+                            {
+                                get_console_msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
+
+                                get_console_msg.Mode = ifx ReceiveMsg.Descriptor.Object == INPUT_HANDLE
+                                                       then shell.input_console_mode else shell.output_console_mode;
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+                            case;
+                                push_context
+                                {
+                                    log_warn( "Unhandled L1 request %\n", ApiNumber );
+                                }
+                        }
+                    }
+                    case 1;
+                    {
+                        l2_type := cast(CONSOLE_L2_API_TYPE) ApiNumber;
+                        if l2_type ==
+                        {
+                            // TODO 
+
+                            case;
+                                push_context
+                                {
+                                    log_warn( "Unhandled L2 request %\n", ApiNumber );
+                                }
+                        }
+                    }
+                    case 2;
+                    {
+                        l3_type := cast(CONSOLE_L3_API_TYPE) ApiNumber;
+                        if l3_type ==
+                        {
+                            // TODO 
+
+                            case;
+                                push_context
+                                {
+                                    log_warn( "Unhandled L3 request %\n", ApiNumber );
+                                }
+                        }
+                    }
+
+                    case;
+                        push_context
+                        {
+                            log_error( "Unknown layer % request %\n", LayerNumber, ApiNumber );
+                        }
+                }
+            }
+
+            case;
+                push_context
+                {
+                    log_warn( "Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
+                }
+        }
     }
 
     return 0;
+}
+
+HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
+{
+    write_msg := *ReceiveMsg.u.consoleMsgL1.WriteConsole;
+
+    // no offset with raw requests
+    read_offset := ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_WRITE
+                   then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize + size_of(CONSOLE_MSG_HEADER);
+    bytes := ReceiveMsg.Descriptor.InputSize - read_offset;
+
+    read_op: CD_IO_OPERATION;
+    read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+    read_op.Buffer.Offset = read_offset;
+    // TODO TODO TODO This is crap obvs
+    read_op.Buffer.Data = shell.outputBuffer.data;
+    read_op.Buffer.Size = bytes;
+
+    BytesRead: DWORD;
+    ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL, 0,
+                           *BytesRead, NULL );
+    if !ok
+        push_context
+        {
+            log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+            return STATUS_UNSUCCESSFUL;
+        }
+
+    // TODO Convert to utf8
+    // TODO Ansi mode requires DOUBLE conversion, first to utf16 (using the current output codepage) and then to utf8
+    // HOWEVER Since applications can choose to set a *utf8* codepage, we can just do NO conversion in that case
+    // and write directly into the SourceBuffer!?
+    // TODO Investigate if there's a way to force set a utf8 codepage at the shell (cmd) level, so all spawned apps use that
+
+    // FastFast_LockTerminal();
+    // if (write_msg.Unicode) {
+    //     FastFast_UpdateTerminalW(frontbuffer, (wchar_t*)output_buf, bytes / 2);
+    // } else {
+    //     FastFast_UpdateTerminalA(frontbuffer, output_buf, bytes);
+    // }
+    // FastFast_UnlockTerminal();
+
+    write_msg.NumBytes = bytes;
+    io_complete.IoStatus.Information = bytes;
+    return STATUS_SUCCESS;
+}
+
+
+CmdHostedShellRead :: ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64
+{
+    shell: *CmdHostedShell = xx base;
+
+    // TODO 
+
+    totalBytes := 0;
+    result: Process_Result = .{ type = .STILL_RUNNING };
+
+    return result, totalBytes;
 }

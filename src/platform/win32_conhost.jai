@@ -121,17 +121,18 @@ CD_CREATE_OBJECT_INFORMATION :: struct
 // typedef struct _CD_ATTACH_INFORMATION64 {
 //     PVOID64 ProcessId;
 // } CD_ATTACH_INFORMATION64, *PCD_ATTACH_INFORMATION64;
+
 //
-// //
-// // Information passed to the driver by a server when a connection is accepted.
-// //
+// Information passed to the driver by a server when a connection is accepted.
 //
-// typedef struct _CD_CONNECTION_INFORMATION {
-//     ULONG_PTR Process;
-//     ULONG_PTR Input;
-//     ULONG_PTR Output;
-// } CD_CONNECTION_INFORMATION, *PCD_CONNECTION_INFORMATION;
-//
+
+CD_CONNECTION_INFORMATION :: struct
+{
+    Process: ULONG_PTR;
+    Input: ULONG_PTR;
+    Output: ULONG_PTR;
+}
+
 // //
 // // Ioctls.
 // //
@@ -174,10 +175,11 @@ CD_IO_COMPLETE :: struct
     Write: CD_IO_BUFFER_DESCRIPTOR;
 }
 
-// typedef struct _CD_IO_OPERATION {
-//     LUID Identifier;
-//     CD_IO_BUFFER_DESCRIPTOR Buffer;
-// } CD_IO_OPERATION, *PCD_IO_OPERATION;
+CD_IO_OPERATION :: struct
+{
+    Identifier: LUID;
+    Buffer: CD_IO_BUFFER_DESCRIPTOR;
+}
 
 CD_IO_SERVER_INFORMATION :: struct
 {
@@ -211,16 +213,13 @@ CD_IO_SERVER_INFORMATION :: struct
 //     ULONG Width;
 //     ULONG Height;
 // } CD_IO_FONT_SIZE, *PCD_IO_FONT_SIZE;
-//
-// #define IOCTL_CONDRV_READ_IO \
-//     CTL_CODE(FILE_DEVICE_CONSOLE, 1, METHOD_OUT_DIRECT, FILE_ANY_ACCESS)
-//
-// #define IOCTL_CONDRV_COMPLETE_IO \
-//     CTL_CODE(FILE_DEVICE_CONSOLE, 2, METHOD_NEITHER, FILE_ANY_ACCESS)
-//
-// #define IOCTL_CONDRV_READ_INPUT \
-//     CTL_CODE(FILE_DEVICE_CONSOLE, 3, METHOD_NEITHER, FILE_ANY_ACCESS)
-//
+
+IOCTL_CONDRV_READ_IO :: #run CTL_CODE( FILE_DEVICE_CONSOLE, 1, METHOD_OUT_DIRECT, FILE_ANY_ACCESS );
+
+IOCTL_CONDRV_COMPLETE_IO :: #run CTL_CODE( FILE_DEVICE_CONSOLE, 2, METHOD_NEITHER, FILE_ANY_ACCESS );
+
+IOCTL_CONDRV_READ_INPUT :: #run CTL_CODE( FILE_DEVICE_CONSOLE, 3, METHOD_NEITHER, FILE_ANY_ACCESS );
+
 // #define IOCTL_CONDRV_WRITE_OUTPUT \
 //     CTL_CODE(FILE_DEVICE_CONSOLE, 4, METHOD_NEITHER, FILE_ANY_ACCESS)
 //
@@ -285,26 +284,27 @@ CONSOLE_FIRST_API_NUMBER :: ( Layer: u32 ) -> u32 #expand
     return (Layer << 24);
 }
 
-// typedef struct _CONSOLE_SERVER_MSG {
-//     ULONG IconId;
-//     ULONG HotKey;
-//     ULONG StartupFlags;
-//     USHORT FillAttribute;
-//     USHORT ShowWindow;
-//     COORD ScreenBufferSize;
-//     COORD WindowSize;
-//     COORD WindowOrigin;
-//     ULONG ProcessGroupId;
-//     BOOLEAN ConsoleApp;
-//     BOOLEAN WindowVisible;
-//     USHORT TitleLength;
-//     WCHAR Title[MAX_PATH + 1];
-//     USHORT ApplicationNameLength;
-//     WCHAR ApplicationName[128];
-//     USHORT CurrentDirectoryLength;
-//     WCHAR CurrentDirectory[MAX_PATH + 1];
-// } CONSOLE_SERVER_MSG, * PCONSOLE_SERVER_MSG;
-//
+CONSOLE_SERVER_MSG :: struct
+{
+    IconId: ULONG;
+    HotKey: ULONG;
+    StartupFlags: ULONG;
+    FillAttribute: USHORT;
+    ShowWindow: USHORT;
+    ScreenBufferSize: COORD;
+    WindowSize: COORD;
+    WindowOrigin: COORD;
+    ProcessGroupId: ULONG;
+    ConsoleApp: BOOLEAN;
+    WindowVisible: BOOLEAN;
+    TitleLength: USHORT;
+    Title: [MAX_PATH + 1] WCHAR;
+    ApplicationNameLength: USHORT;
+    ApplicationName: [128] WCHAR;
+    CurrentDirectoryLength: USHORT;
+    CurrentDirectory: [MAX_PATH + 1] WCHAR;
+}
+
 // typedef struct _CONSOLE_BROKER_DATA {
 //     WCHAR DesktopName[MAX_PATH];
 // } CONSOLE_BROKER_MSG, * PCONSOLE_BROKER_MSG;
@@ -419,19 +419,20 @@ else
 // #endif // __cplusplus
 //
     // TODO Compare against terminal/src/server/ApiSorter.cpp
-        // TODO Seems to duplicate CONSOLE_API_NUMBER_L1 above
-// typedef enum CONSOLE_L1_API_TYPE {
-//     Api_GetConsoleCP,
-//     Api_GetConsoleMode,
-//     Api_SetConsoleMode,
-//     Api_GetNumberOfCOnsoleInputEvents,
-//     Api_GetConsoleInput,
-//     Api_ReadConsole,
-//     Api_WriteConsole,
-//     Api_ServerConsoleNotifyLastChance,
-//     Api_GetConsoleLangId,
-//     Api_ConsoleMapBitmap
-// } CONSOLE_L1_API_TYPE;
+    // NOTE Seems to duplicate CONSOLE_API_NUMBER_L1 above
+CONSOLE_L1_API_TYPE :: enum
+{
+    Api_GetConsoleCP;
+    Api_GetConsoleMode;
+    Api_SetConsoleMode;
+    Api_GetNumberOfCOnsoleInputEvents;
+    Api_GetConsoleInput;
+    Api_ReadConsole;
+    Api_WriteConsole;
+    Api_ServerConsoleNotifyLastChance;
+    Api_GetConsoleLangId;
+    Api_ConsoleMapBitmap;
+}
 
 
 
@@ -514,7 +515,7 @@ CONSOLE_SCREENBUFFERINFO_MSG :: struct
     MaximumWindowSize: COORD;
     PopupAttributes: USHORT;
     FullscreenSupported: BOOLEAN;
-    ColorTable: [16] COLORREF;
+    ColorTable: [16] DWORD; // COLORREF
 }
 
 CONSOLE_SETSCREENBUFFERSIZE_MSG :: struct
@@ -664,31 +665,32 @@ CONSOLE_MSG_BODY_L2 :: union
 // #endif // __cplusplus
 //
     // TODO Compare against terminal/src/server/ApiSorter.cpp
-    // TODO Seems to duplicate CONSOLE_API_NUMBER_L2 above
-// typedef enum CONSOLE_L2_API_TYPE {
-//     Api_FillConsoleOutput,
-//     Api_GenerateConsoleCtrlEvent,
-//     Api_SetConsoleActiveScreenBuffer,
-//     Api_FlushConsoleInputBuffer,
-//     Api_SetConsoleCP,
-//     Api_GetConsoleCursorInfo,
-//     Api_SetConsoleCursorInfo,
-//     Api_GetConsoleScreenBufferInfo,
-//     Api_SetConsoleScreenBufferInfo,
-//     Api_SetConsoleScreenBufferSize,
-//     Api_SetConsoleCursorPosition,
-//     Api_GetLargestConsoleWindowSize,
-//     Api_ScrollConsoleScreenBuffer,
-//     Api_SetConsoleTextAttribute,
-//     Api_SetConsoleWindowInfo,
-//     Api_ReadConsoleOutputString,
-//     Api_WriteConsoleInput,
-//     Api_WriteConsoleOutput,
-//     Api_WriteConsoleOutputString,
-//     Api_ReadConsoleOutput,
-//     Api_GetConsoleTitle,
-//     Api_SetConsoleTitle,
-// } CONSOLE_L2_API_TYPE;
+    // NOTE Seems to duplicate CONSOLE_API_NUMBER_L2 above
+CONSOLE_L2_API_TYPE :: enum
+{
+    Api_FillConsoleOutput;
+    Api_GenerateConsoleCtrlEvent;
+    Api_SetConsoleActiveScreenBuffer;
+    Api_FlushConsoleInputBuffer;
+    Api_SetConsoleCP;
+    Api_GetConsoleCursorInfo;
+    Api_SetConsoleCursorInfo;
+    Api_GetConsoleScreenBufferInfo;
+    Api_SetConsoleScreenBufferInfo;
+    Api_SetConsoleScreenBufferSize;
+    Api_SetConsoleCursorPosition;
+    Api_GetLargestConsoleWindowSize;
+    Api_ScrollConsoleScreenBuffer;
+    Api_SetConsoleTextAttribute;
+    Api_SetConsoleWindowInfo;
+    Api_ReadConsoleOutputString;
+    Api_WriteConsoleInput;
+    Api_WriteConsoleOutput;
+    Api_WriteConsoleOutputString;
+    Api_ReadConsoleOutput;
+    Api_GetConsoleTitle;
+    Api_SetConsoleTitle;
+}
 
 
 
@@ -996,12 +998,12 @@ CONSOLE_GETCONSOLEWINDOW_MSG64 :: struct
     hwnd: PVOID64;
 }
 
-CONSOLE_GETPROCESSLIST_MSG :: struct
+CONSOLE_GETCONSOLEPROCESSLIST_MSG :: struct
 {
     dwProcessCount: ULONG;
 }
 
-CONSOLE_GETHISTORY_MSG :: struct
+CONSOLE_HISTORY_MSG :: struct
 {
     HistoryBufferSize: ULONG;
     NumberOfHistoryBuffers: ULONG;
@@ -1134,54 +1136,55 @@ else
 // #endif  // __cplusplus
 //
     // TODO Compare against terminal/src/server/ApiSorter.cpp
-    // TODO Duplicates CONSOLE_API_NUMBER_L3 above?
-// typedef enum CONSOLE_L3_API_TYPE {
-//     Api_GetNumberOfFonts,
-//     Api_GetNumberOfConsoleMouseButtons,
-//     Api_GetFontInfo,
-//     Api_GetConsoleFontSize,
-//     Api_GetCurrentConsoleFont,
-//     Api_SetFont,
-//     Api_SetIcon,
-//     Api_InvalidateRect,
-//     Api_VDM,
-//     Api_SetCursor,
-//     Api_ShowCursor,
-//     Api_MenuControl,
-//     Api_SetPalette,
-//     Api_SetConsoleDisplayMode,
-//     Api_RegisterVDM,
-//     Api_GetHardwareState,
-//     Api_SetHardwareState,
-//     Api_GetConsoleDisplayMode,
-//     Api_AddConsoleAlias,
-//     Api_GetConsoleAlias,
-//     Api_GetConsoleAliasesLength,
-//     Api_GetConsoleAliasExesLength,
-//     Api_GetConsoleAliases,
-//     Api_GetConsoleAliasExes,
-//     Api_ExpungeConsoleCommandHistory,
-//     Api_SetConsoleNumberOfCommands,
-//     Api_GetConsoleCommandHistoryLength,
-//     Api_GetConsoleCommandHistory,
-//     Api_SetKeyShortcuts,
-//     Api_MenuClose,
-//     Api_GetKeyboardLayoutName,
-//     Api_GetConsoleWindow,
-//     Api_CharType,
-//     Api_LocalEudc,
-//     Api_CursorMode,
-//     Api_CursorMode2,
-//     Api_RegisterOS2,
-//     Api_SetOS2OEMFormat,
-//     Api_NlsMode,
-//     Api_NlsMode2,
-//     Api_GetConsoleSelectionInfo,
-//     Api_GetConsoleProcessList,
-//     Api_GetConsoleHistory,
-//     Api_SetConsoleHistory,
-//     Api_SetConsoleCurrentFont,
-// } CONSOLE_L3_API_TYPE;
+    // NOTE Duplicates CONSOLE_API_NUMBER_L3 above
+CONSOLE_L3_API_TYPE :: enum
+{
+    Api_GetNumberOfFonts;
+    Api_GetNumberOfConsoleMouseButtons;
+    Api_GetFontInfo;
+    Api_GetConsoleFontSize;
+    Api_GetCurrentConsoleFont;
+    Api_SetFont;
+    Api_SetIcon;
+    Api_InvalidateRect;
+    Api_VDM;
+    Api_SetCursor;
+    Api_ShowCursor;
+    Api_MenuControl;
+    Api_SetPalette;
+    Api_SetConsoleDisplayMode;
+    Api_RegisterVDM;
+    Api_GetHardwareState;
+    Api_SetHardwareState;
+    Api_GetConsoleDisplayMode;
+    Api_AddConsoleAlias;
+    Api_GetConsoleAlias;
+    Api_GetConsoleAliasesLength;
+    Api_GetConsoleAliasExesLength;
+    Api_GetConsoleAliases;
+    Api_GetConsoleAliasExes;
+    Api_ExpungeConsoleCommandHistory;
+    Api_SetConsoleNumberOfCommands;
+    Api_GetConsoleCommandHistoryLength;
+    Api_GetConsoleCommandHistory;
+    Api_SetKeyShortcuts;
+    Api_MenuClose;
+    Api_GetKeyboardLayoutName;
+    Api_GetConsoleWindow;
+    Api_CharType;
+    Api_LocalEudc;
+    Api_CursorMode;
+    Api_CursorMode2;
+    Api_RegisterOS2;
+    Api_SetOS2OEMFormat;
+    Api_NlsMode;
+    Api_NlsMode2;
+    Api_GetConsoleSelectionInfo;
+    Api_GetConsoleProcessList;
+    Api_GetConsoleHistory;
+    Api_SetConsoleHistory;
+    Api_SetConsoleCurrentFont;
+}
 
 
 
@@ -1201,19 +1204,19 @@ Abstract:
 * Console window startup optimization.
 */
 
-// // TODO Seems to be exactly the same as handterm's ControlType below, however with some "reserved" stuff
-// typedef enum _CONSOLECONTROL
-// {
-//     Reserved1,
-//     ConsoleNotifyConsoleApplication,
-//     Reserved2,
-//     ConsoleSetCaretInfo,
-//     Reserved3,
-//     ConsoleSetForeground,
-//     ConsoleSetWindowOwner,
-//     ConsoleEndTask,
-// } CONSOLECONTROL;
-//
+// TODO Seems to be exactly the same as handterm's ControlType below, however with some "reserved" stuff
+CONSOLECONTROL :: enum
+{
+    Reserved1;
+    ConsoleNotifyConsoleApplication;
+    Reserved2;
+    ConsoleSetCaretInfo;
+    Reserved3;
+    ConsoleSetForeground;
+    ConsoleSetWindowOwner;
+    ConsoleEndTask;
+}
+
 // //
 // // CtrlFlags definitions
 // //
@@ -1244,29 +1247,26 @@ Abstract:
 //     HANDLE hProcess;
 //     BOOL bForeground;
 // } CONSOLESETFOREGROUND, *PCONSOLESETFOREGROUND;
-//
-// /*
-//     * Console window startup optimization.
-//     */
-// #define CPI_NEWPROCESSWINDOW 0x0001
-//
-// typedef struct _CONSOLE_PROCESS_INFO
-// {
-//     DWORD dwProcessID;
-//     DWORD dwFlags;
-// } CONSOLE_PROCESS_INFO, *PCONSOLE_PROCESS_INFO;
-//
+
+/*
+* Console window startup optimization.
+*/
+CPI_NEWPROCESSWINDOW :: 0x0001;
+
+CONSOLE_PROCESS_INFO :: struct
+{
+    dwProcessID: DWORD;
+    dwFlags: DWORD;
+}
+
 // typedef struct _CONSOLE_CARET_INFO
 // {
 //     HWND hwnd;
 //     RECT rc;
 // } CONSOLE_CARET_INFO, *PCONSOLE_CARET_INFO;
-//
-// NTSTATUS ConsoleControl(
-//     __in CONSOLECONTROL Command,
-//     __in_bcount_opt(ConsoleInformationLength) PVOID ConsoleInformation,
-//     __in DWORD ConsoleInformationLength);
 
+// NOTE Moved to CmdHostedShell
+// ConsoleControl :: ( Command: CONSOLECONTROL, Information: PVOID, Length: DWORD ) -> NTSTATUS #foreign user32;
 
 
 //// Misc
@@ -1363,6 +1363,65 @@ METHOD_NEITHER    :: 3;
 
 FILE_ANY_ACCESS :: 0;
 
+CONSOLE_SELECTION_INFO :: struct
+{
+    dwFlags: DWORD;
+    dwSelectionAnchor: COORD;
+    srSelection: SMALL_RECT;
+}
+
+CHAR_INFO :: struct
+{
+    Char: union
+    {
+        UnicodeChar: WCHAR;
+        AsciiChar: UCHAR;
+    }
+    Attributes: WORD;
+}
+
+LF_FACESIZE :: 32;
+
+STATUS_SUCCESS                :: 0x0;
+STATUS_UNSUCCESSFUL           :: 0xC0000001;
+STATUS_SHARING_VIOLATION      :: 0xC0000043;
+STATUS_INSUFFICIENT_RESOURCES :: 0xC000009A;
+STATUS_ILLEGAL_FUNCTION       :: 0xC00000AF;
+STATUS_PIPE_DISCONNECTED      :: 0xC00000B0;
+STATUS_BUFFER_TOO_SMALL       :: 0xC0000023;
+STATUS_NOT_FOUND              :: 0xC0000225;
+
+/*
+* Input mode flags
+*/
+ENABLE_PROCESSED_INPUT          :: 0x0001;
+ENABLE_LINE_INPUT               :: 0x0002;
+ENABLE_ECHO_INPUT               :: 0x0004;
+ENABLE_WINDOW_INPUT             :: 0x0008;
+ENABLE_MOUSE_INPUT              :: 0x0010;
+ENABLE_INSERT_MODE              :: 0x0020;
+ENABLE_QUICK_EDIT_MODE          :: 0x0040;
+ENABLE_EXTENDED_FLAGS           :: 0x0080;
+ENABLE_AUTO_POSITION            :: 0x0100;
+ENABLE_VIRTUAL_TERMINAL_INPUT   :: 0x0200;
+ 
+/*
+ * Output mode flags
+*/
+ENABLE_PROCESSED_OUTPUT             :: 0x0001;
+ENABLE_WRAP_AT_EOL_OUTPUT           :: 0x0002;
+// ENABLE_VIRTUAL_TERMINAL_PROCESSING  :: 0x0004; // Already declared in Windows.jai
+DISABLE_NEWLINE_AUTO_RETURN         :: 0x0008;
+ENABLE_LVB_GRID_WORLDWIDE           :: 0x0010;
+ 
+
+// These are required for wait routines to accurately identify which function is waited on and needs to be dispatched later.
+// It's stored here so it can be easily aligned with the layer descriptions below.
+// 0x01 stands for level 1 API (layers are 1-based)
+// 0x000004 stands for the 5th one down in the layer structure (call IDs are 0-based)
+API_NUMBER_GETCONSOLEINPUT :: 0x01000004;
+API_NUMBER_READCONSOLE     :: 0x01000005;
+API_NUMBER_WRITECONSOLE    :: 0x01000006;
 
 // TODO https://doxygen.reactos.org/d8/d14/wincon_8h_source.html
 // TODO https://doxygen.reactos.org/d1/d58/wincontypes_8h_source.html

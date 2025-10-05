@@ -1,4 +1,11 @@
 
+log_warn :: ( format_string: string, args: .. Any, loc := #caller_location, flags := Log_Flags.NONE, user_flags : u32 = 0,
+              section : *Log_Section = null )
+{
+    log( format_string, ..args, loc, flags | .WARNING, user_flags, section );
+} @PrintLike
+
+
 push :: ( array: *[..] $T, data: *T, count: int )
 {
     oldCount := array.count;
