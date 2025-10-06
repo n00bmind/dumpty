@@ -11,6 +11,8 @@ CmdHostedShell :: struct
     // base.getWaitableHandlesProc = CmdHostedShellGetWaitableHandles;
 
     consoleControl : #type ( Command: CONSOLECONTROL, Information: PVOID, Length: DWORD ) -> NTSTATUS #c_call;
+    sourceBuffer: *SourceBuffer;
+    lastSourceAbsP: s64;
 
     serverHandle: HANDLE;
     ioThreadHandle: HANDLE;
@@ -23,14 +25,17 @@ CmdHostedShell :: struct
     input_console_mode: ULONG = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT
                               | ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS | ENABLE_AUTO_POSITION;
     output_console_mode: ULONG = ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT;
-    eof: bool;
+    input_cp: UINT;
+    output_cp: UINT;
 
     // Incoming data from the shell will be in utf16, so we cant avoid (at least) a copy + conversion
     // (ansi requires *2* conversions, first to utf16 and then to utf8)
-    // TODO Is that actually true!?
+    // TODO Unless the CP is utf8 already!
     stagingBuffer: [] u8;
     outputBuffer: [] u8;
     outputByteCount: s64;
+
+    eof: bool;
 }
 
 
@@ -46,12 +51,17 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
 {
     shell: *CmdHostedShell = xx base;
 
+    assert( shell.sourceBuffer && "Need a SourceBuffer!" );
+
     shell.consoleControl = xx GetProcAddress( LoadLibraryExA( "user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 ),
                                               "ConsoleControl" );
     assert( shell.consoleControl != null && "Failed retrieving entrypoint 'ConsoleControl' from user32.dll" );
 
-    // TODO See if we can do raw ingest without an extra copy
+    // TODO 
     shell.outputBuffer = NewArray( 1024 * 1024, u8 );
+
+    shell.input_cp = GetOEMCP();
+    shell.output_cp = GetOEMCP();
 
     CreateServerHandle( *shell.serverHandle, .FALSE );
     refHandle: HANDLE;
@@ -297,6 +307,13 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         {
                             // TODO 
                             
+                            // case Api_GetConsoleCP;
+                            // {
+                            //     getcp_msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
+                            //     getcp_msg.CodePage = ifx getcp_msg.Output then output_cp else input_cp;
+                            //
+                            //     io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            // }
                             case .Api_GetConsoleMode;
                             {
                                 get_console_msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
@@ -305,6 +322,12 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                                        then shell.input_console_mode else shell.output_console_mode;
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                             }
+
+                            case .Api_GetConsoleLangId;
+                                // This is now unsupported, except for CJK languages
+                                // TODO See GetConsoleLangId in terminal/src/host/srvinit.cpp
+                                io_complete.IoStatus.Status = STATUS_NOT_SUPPORTED;
+
                             case;
                                 push_context
                                 {
@@ -365,43 +388,99 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
     write_msg := *ReceiveMsg.u.consoleMsgL1.WriteConsole;
 
     // no offset with raw requests
-    read_offset := ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_WRITE
-                   then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize + size_of(CONSOLE_MSG_HEADER);
-    bytes := ReceiveMsg.Descriptor.InputSize - read_offset;
+    readOffset := cast(ULONG) (ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_WRITE
+                               then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize + size_of(CONSOLE_MSG_HEADER));
+    totalBytes := ReceiveMsg.Descriptor.InputSize - readOffset;
 
-    read_op: CD_IO_OPERATION;
-    read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
-    read_op.Buffer.Offset = read_offset;
-    // TODO TODO TODO This is crap obvs
-    read_op.Buffer.Data = shell.outputBuffer.data;
-    read_op.Buffer.Size = bytes;
+    #if false
+    {
+        read_op: CD_IO_OPERATION;
+        read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+        read_op.Buffer.Offset = readOffset;
+        // TODO TODO TODO This is crap obvs
+        read_op.Buffer.Data = shell.outputBuffer.data;
+        read_op.Buffer.Size = totalBytes;
 
-    BytesRead: DWORD;
-    ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL, 0,
-                           *BytesRead, NULL );
-    if !ok
+        bytesRead: DWORD;
+        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL, 0,
+        *bytesRead, NULL );
+        if !ok
         push_context
         {
             log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
             return STATUS_UNSUCCESSFUL;
         }
+    }
 
-    // TODO Convert to utf8
-    // TODO Ansi mode requires DOUBLE conversion, first to utf16 (using the current output codepage) and then to utf8
-    // HOWEVER Since applications can choose to set a *utf8* codepage, we can just do NO conversion in that case
-    // and write directly into the SourceBuffer!?
-    // TODO Investigate if there's a way to force set a utf8 codepage at the shell (cmd) level, so all spawned apps use that
+    writtenBytes: ULONG;
+    // TODO Write a simple cmdline app to test the various console output methods together with codepages etc
+    // TODO Add CP handling to splat2 to benchmark the 3 branches here?
+    if write_msg.Unicode
+    {
+        // TODO Convert to utf8
 
-    // FastFast_LockTerminal();
-    // if (write_msg.Unicode) {
-    //     FastFast_UpdateTerminalW(frontbuffer, (wchar_t*)output_buf, bytes / 2);
-    // } else {
-    //     FastFast_UpdateTerminalA(frontbuffer, output_buf, bytes);
-    // }
-    // FastFast_UnlockTerminal();
+    }
+    else
+    {
+        // TODO Investigate if there's a way to force set a utf8 codepage at the shell (cmd) level, so all spawned apps use that
+        // if shell.output_cp == CP_UTF8
+        {
+            // TODO Get some stats going for how many bytes per sec. the IO thread is actually filling here
+            // TODO Try to figure out a way to easily determine whether any bottlenecks are in the shell or our parsing
 
-    write_msg.NumBytes = bytes;
-    io_complete.IoStatus.Information = bytes;
+            // success, outBytes = ReadPipe( shell, range );
+            ok := BOOL.TRUE;
+            while writtenBytes < totalBytes && ok
+            {
+                // TODO Atomics!
+                range: [] u8;
+                push_context
+                {
+                    range = GetNextWriteableRange( shell.sourceBuffer );
+                }
+
+                read_op: CD_IO_OPERATION;
+                read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+                read_op.Buffer.Offset = readOffset;
+                read_op.Buffer.Data = range.data;
+                read_op.Buffer.Size = totalBytes - writtenBytes;
+
+                bytesRead: DWORD;
+                ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
+                                      0, *bytesRead, NULL );
+                if ok
+                {
+                    if bytesRead
+                    {
+                        // TODO TODO TODO Ensure we write a line terminator, but dont commit it so its overwritten next time
+                        // If we dont do this ParseLines will freak out because it doesnt know where to end!?
+                        // That's not making a lot of sense though.. How did this even work with other shells then?
+                        // range[ bytesRead ] = 10;
+
+                        push_context
+                        {
+                            CommitWrite( shell.sourceBuffer, xx bytesRead );
+                        }
+                        writtenBytes += bytesRead;
+                    }
+                }
+                else
+                    push_context
+                    {
+                        log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+                        return STATUS_UNSUCCESSFUL;
+                    }
+            }
+        }
+        // else
+        {
+            // TODO Ansi mode requires DOUBLE conversion, first to utf16 (using the current output codepage) and then to utf8
+
+        }
+    }
+
+    write_msg.NumBytes = writtenBytes;
+    io_complete.IoStatus.Information = writtenBytes;
     return STATUS_SUCCESS;
 }
 
@@ -410,10 +489,20 @@ CmdHostedShellRead :: ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_R
 {
     shell: *CmdHostedShell = xx base;
 
-    // TODO 
-
     totalBytes := 0;
     result: Process_Result = .{ type = .STILL_RUNNING };
+
+    if shell.eof
+    {
+        // TODO Sync exit code with IO thread
+        result = .{type = .EXITED, exit_code = -1};
+        return result, totalBytes;
+    }
+
+    // TODO Atomics!
+    // absStartP := shell.sourceBuffer.absoluteHeadPos;
+    // totalBytes = absStartP - shell.lastSourceAbsP;
+    // shell.lastSourceAbsP = absStartP;
 
     return result, totalBytes;
 }

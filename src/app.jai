@@ -10,7 +10,9 @@ AppInit :: ( memory: *AppMemory, renderer: *RendererState )
 
         appState := cast(*AppState) memory.appState;
         // appState.shell = CreateShell();
-        appState.shell = New( CmdHostedShell );
+        hostedShell := New( CmdHostedShell );
+        hostedShell.sourceBuffer = *appState.sourceBuffer;
+        appState.shell = hostedShell;
 
         ret := appState.shell.startProc( appState.shell );
         assert( ret, "Failed to start shell" );
@@ -68,10 +70,10 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
                     newOffset += renderer.cellCount.y / 2;
                     newOffset = Min( newOffset, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
                     // Still need to check we're not showing too far back into sourceBuffer (wrapping around content)
-                    absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absoluteLineIdx, newOffset,
-                                                                    renderer.cellCount.y );
+                    absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absLineIdx, newOffset,
+                                                                   renderer.cellCount.y );
                     line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LinesMask ];
-                    if line.absStartPos < appState.sourceBuffer.absoluteHeadPos - SourceBuffer.MaxSize
+                    if line.absStartPos < appState.sourceBuffer.absHeadPos - SourceBuffer.MaxSize
                         newOffset = appState.lineOffset;
 
                     appState.lineOffset = newOffset;
@@ -166,10 +168,12 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
         }
     }
 
-    // Gather output from the builtin and / or shell processes
+    // Gather output from the builtin process
+    // FIXME Here we have the same problem as in AppendToSourceBuffer, we need to ensure the shell is the only writer into
+    // SourceBuffer. See the note in AppendToSourceBuffer and rewrite this.
     if IsRunning( appState.builtinProcess )
     {
-        absStartP := appState.sourceBuffer.absoluteHeadPos;
+        absStartP := appState.sourceBuffer.absHeadPos;
 
         result, totalBytes := ReadProcessOutput( *appState.builtinProcess, *appState.sourceBuffer );
 
@@ -192,15 +196,26 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
             appState.shell.writeProc( appState.shell, "\n" );
         }
     }
+    // Gather output from the shell process
     // TODO Do we really need to call this at all?
     // if IsRunning( appState.shell )
     {
-        absStartP := appState.sourceBuffer.absoluteHeadPos;
+        // TODO We can no longer do this, we need our own head pos
+        // absStartP := appState.sourceBuffer.absHeadPos;
 
+        // TODO For shells directly injecting data into the SourceBuffer, returning a byte count here is utterly inaccurate and
+        // misleading, so we should probably remove that from the shell API entirely!
         result, totalBytes := appState.shell.readProc( appState.shell, *appState.sourceBuffer );
 
+        // TODO Review all remaining uses of absHeadPos, and create some helper procs to make intended use more explicit
+        absStartP := appState.sourceBuffer.absHeadPos;
+        totalBytes = absStartP - appState.sourceBuffer.absParsedHeadPos;
+
         if totalBytes > 0
-            ParseLines( *appState.sourceBuffer, absStartP, totalBytes, renderer );
+        {
+            ParseLines( *appState.sourceBuffer, appState.sourceBuffer.absParsedHeadPos, totalBytes, renderer );
+            appState.sourceBuffer.absParsedHeadPos = absStartP;
+        }
 
         if result.type != .STILL_RUNNING
         {
@@ -261,9 +276,12 @@ SourceBuffer :: struct
     bytes: [] u8;
     lines: [] Line;
     // Points to the next character to write. Absolute, so needs to be masked
-    absoluteHeadPos: s64;
-    // Same as above, but for the *current* (open) line in the lines buffer
-    absoluteLineIdx: s64;
+    absHeadPos: s64;
+    // Next character to parse, for the purposes of adding new lines to the lines buffer
+    absParsedHeadPos: s64;
+    // Points to the *current* (open) line in the lines buffer.
+    // The current line will usually be "open" because it's never guaranteed that newly ingested data will end on a newline..
+    absLineIdx: s64;
     bytesFilled: bool;
     linesFilled: bool;
 
@@ -276,7 +294,7 @@ SourceBuffer :: struct
 
 GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [] u8
 {
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
+    relPos := buffer.absHeadPos & SourceBuffer.SizeMask;
 
     maxAvailableCount := buffer.bytes.count - relPos;
     count := Min( maxCount, maxAvailableCount );
@@ -286,41 +304,47 @@ GetNextWriteableRange :: ( buffer: *SourceBuffer, maxCount: s64 = S64_MAX ) -> [
 
 CommitWrite :: ( buffer: *SourceBuffer, count: s64 )
 {
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
+    relPos := buffer.absHeadPos & SourceBuffer.SizeMask;
     maxAvailableCount := buffer.bytes.count - relPos;
 
     assert( count <= maxAvailableCount && "Trying to commit data that doesnt fit in the available range" );
 
-    buffer.absoluteHeadPos += count;
-    if buffer.absoluteHeadPos >= buffer.bytes.count
+    buffer.absHeadPos += count;
+    if buffer.absHeadPos >= buffer.bytes.count
         buffer.bytesFilled = true;
 }
 
+// FIXME This can no longer write to the source buffer directly, since we need to have a single writer on shells that
+// write directly into the SourceBuffer (hosted shell).
+// - For diagnostic msgs, we'd need to pass this to the shell through a new entrypoint, so it can coordinate the write
+//   appropriately. Then we just parse the incoming lines through the usual means in the main app loop.
+// - For fake command echo, we could just not do it, and rely on enabling console echo on the shell side somehow, although
+//   that'd prevent us from adding our own "extensions" like our own history / completion etc. OR, we do the same as above.
 AppendToSourceBuffer :: ( buffer: *SourceBuffer, data: string, renderer: *RendererState )
 {
     assert( data.count <= buffer.bytes.count );
 
-    relPos := buffer.absoluteHeadPos & SourceBuffer.SizeMask;
+    relPos := buffer.absHeadPos & SourceBuffer.SizeMask;
     available := buffer.bytes.count - relPos;
 
     // Do we need to split the copy? (if we're approaching the end of the buffer)
     if( data.count < available )
     {
         memcpy( buffer.bytes.data + relPos, data.data, data.count );
-        ParseLines( buffer, buffer.absoluteHeadPos, data.count, renderer );
+        ParseLines( buffer, buffer.absHeadPos, data.count, renderer );
     }
     else
     {
         memcpy( buffer.bytes.data + relPos, data.data, available );
         memcpy( buffer.bytes.data, data.data + available, data.count - available );
 
-        ParseLines( buffer, buffer.absoluteHeadPos, available, renderer );
-        ParseLines( buffer, buffer.absoluteHeadPos + available, data.count - available,
+        ParseLines( buffer, buffer.absHeadPos, available, renderer );
+        ParseLines( buffer, buffer.absHeadPos + available, data.count - available,
                     renderer );
     }
 
-    buffer.absoluteHeadPos += data.count;
-    if buffer.absoluteHeadPos >= buffer.bytes.count
+    buffer.absHeadPos += data.count;
+    if buffer.absHeadPos >= buffer.bytes.count
         buffer.bytesFilled = true;
 }
 
@@ -496,7 +520,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64,
     {
         // TODO This block is now lagging behind in terms of features
         srcChar := *buffer.bytes[ absStartPos & SourceBuffer.SizeMask ];
-        line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+        line := *buffer.lines[ buffer.absLineIdx & SourceBuffer.LinesMask ];
 
         for absStartPos .. absStartPos + sizeBytes - 1
         {
@@ -512,8 +536,8 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64,
                 line.absOnePastEndPos = it + 1;
                 line.startingProps = buffer.runningCursor.props;
 
-                buffer.absoluteLineIdx += 1;
-                if buffer.absoluteLineIdx >= buffer.lines.count
+                buffer.absLineIdx += 1;
+                if buffer.absLineIdx >= buffer.lines.count
                 buffer.linesFilled = true;
             }
 
@@ -553,7 +577,7 @@ ParseLines :: ( buffer: *SourceBuffer, absStartPos: s64, sizeBytes: s64,
             // Ensure really long lines dont cause too many issues
             // TODO There's an edge case here, where if a VT code straddles this artificial split, we should stop
             // parsing right at the point where the code starts and restart parsing there on the next ParseLines call
-            // For that we'd need to introduce a 'parseHead' which we dont have rn..
+            // We do have 'absParsedHeadPos' now, so use it!
             if count > SplitLineAtCount
                 count = SplitLineAtCount;
 
@@ -633,11 +657,11 @@ NewLine :: ( absP: s64, buffer: *SourceBuffer )
     // Complete currently open line
     UpdateCurLineEnd( absP, buffer );
 
-    buffer.absoluteLineIdx += 1;
-    if buffer.absoluteLineIdx >= buffer.lines.count
+    buffer.absLineIdx += 1;
+    if buffer.absLineIdx >= buffer.lines.count
         buffer.linesFilled = true;
 
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    line := *buffer.lines[ buffer.absLineIdx & SourceBuffer.LinesMask ];
     // Start a new, initially empty line
     line.absStartPos = absP;
     line.absOnePastEndPos = absP;
@@ -681,10 +705,10 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
 
     commandString := commandLine.input;
 
-    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
+    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absLineIdx, lineOffset, renderer.cellCount.y );
     // Clamp at 0 if we underflowed but the buffer has never filled up yet
     // TODO Do we wanna initially fill the window from the top down or the bottom up?
-    //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absoluteLineIdx
+    //if !sourceBuffer.linesFilled && absStartLineIdx > sourceBuffer.absLineIdx
         //absStartLineIdx = 0;
     relStartLineIdx := absStartLineIdx & SourceBuffer.LinesMask;
     line := *sourceBuffer.lines[ relStartLineIdx ];
@@ -756,7 +780,7 @@ UpdateRendererCells :: ( renderer: *RendererState, sourceBuffer: SourceBuffer, l
         if line >= sourceBuffer.lines.data + sourceBuffer.lines.count
             line = sourceBuffer.lines.data;
     }
-    // FIXME Current line at absoluteLineIdx will be empty, so ensure we draw up to the end of the buffer
+    // FIXME Current line at absLineIdx will be empty, so ensure we draw up to the end of the buffer
     // TODO This is no longer true, but step over all that data and do some tests
 
     #if false
@@ -811,7 +835,7 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     // TODO This is kinda wasteful when we have very long lines, would be preferable to count how many glyphs in each line?
     // NOTE Overflowing the bottom of the screen is not a problem, at the very end we note which screen row we ended up in,
     // so that the renderer knows to horizontally split the buffer in two at that row and render the two halves appropriately.
-    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absoluteLineIdx, lineOffset, renderer.cellCount.y );
+    absStartLineIdx := GetFirstScreenLineAbsIndex( sourceBuffer.absLineIdx, lineOffset, renderer.cellCount.y );
     // TODO Refterm does many more lines per pass here, I assume to try to account for arbitrary cursor jumps etc
     // but I'm unsure that's really necessary?
     lineCount := renderer.cellCount.y;
@@ -910,7 +934,12 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
                         {
                             // TODO Shaping, font fallback, etc
 
-                            str := GetContiguousView( range, 6 );
+                            // Wikipedia states that continuation bytes 5 & 6 are "unused"
+                            str := GetContiguousView( range, 4 );
+                            // TODO character_utf8_to_utf32 already checks that we have the right amount of continuation bytes
+                            // and will return "source exhausted" if we dont, so incomplete utf8 at the end of the ingested
+                            // data is not a problem.. however we may want to entirely skip the glyph in this case, to avoid
+                            // polluting the cache with the unicode replacement char?
                             codepoint, advance, result := character_utf8_to_utf32( str.data, str.count );
                             str.count = advance;
 
@@ -1400,7 +1429,7 @@ Init :: ( buffer: *SourceBuffer )
 
 GetCurLine :: ( buffer: *SourceBuffer ) -> *Line
 {
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    line := *buffer.lines[ buffer.absLineIdx & SourceBuffer.LinesMask ];
     return line;
 }
 
@@ -1422,7 +1451,7 @@ GetBufferRange :: ( line: Line, buffer: SourceBuffer ) -> SourceBufferRange
 
 UpdateCurLineEnd :: ( absP: s64, buffer: *SourceBuffer )
 {
-    line := *buffer.lines[ buffer.absoluteLineIdx & SourceBuffer.LinesMask ];
+    line := *buffer.lines[ buffer.absLineIdx & SourceBuffer.LinesMask ];
     line.absOnePastEndPos = absP;
 }
 

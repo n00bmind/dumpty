@@ -121,6 +121,7 @@ NULL                                :: cast(*void) 0;
 BYTE                                :: u8;
 UCHAR                               :: u8;
 USHORT                              :: u16;
+UINT                                :: u32;
 ULONG                               :: u32;
 WCHAR                               :: u16;
 PWSTR                               :: *WCHAR;
@@ -253,6 +254,8 @@ WaitForSingleObjectEx :: ( hHandle: HANDLE, dwMilliseconds: DWORD, bAlertable: B
 
 DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWORD, out_buff: *void, out_count: DWORD,
                      returned: *DWORD, overlapped: *OVERLAPPED ) -> BOOL #foreign kernel32;
+
+GetOEMCP :: () -> UINT #foreign kernel32;
 
 // Conhost stuff
 #load "win32_conhost.jai";

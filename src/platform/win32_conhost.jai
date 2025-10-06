@@ -1382,6 +1382,7 @@ CHAR_INFO :: struct
 
 LF_FACESIZE :: 32;
 
+// NTSTATUS values
 STATUS_SUCCESS                :: 0x0;
 STATUS_UNSUCCESSFUL           :: 0xC0000001;
 STATUS_SHARING_VIOLATION      :: 0xC0000043;
@@ -1390,6 +1391,7 @@ STATUS_ILLEGAL_FUNCTION       :: 0xC00000AF;
 STATUS_PIPE_DISCONNECTED      :: 0xC00000B0;
 STATUS_BUFFER_TOO_SMALL       :: 0xC0000023;
 STATUS_NOT_FOUND              :: 0xC0000225;
+STATUS_NOT_SUPPORTED          :: 0xC00000BB;
 
 /*
 * Input mode flags
@@ -1414,7 +1416,6 @@ ENABLE_WRAP_AT_EOL_OUTPUT           :: 0x0002;
 DISABLE_NEWLINE_AUTO_RETURN         :: 0x0008;
 ENABLE_LVB_GRID_WORLDWIDE           :: 0x0010;
  
-
 // These are required for wait routines to accurately identify which function is waited on and needs to be dispatched later.
 // It's stored here so it can be easily aligned with the layer descriptions below.
 // 0x01 stands for level 1 API (layers are 1-based)
@@ -1422,6 +1423,7 @@ ENABLE_LVB_GRID_WORLDWIDE           :: 0x0010;
 API_NUMBER_GETCONSOLEINPUT :: 0x01000004;
 API_NUMBER_READCONSOLE     :: 0x01000005;
 API_NUMBER_WRITECONSOLE    :: 0x01000006;
+
 
 // TODO https://doxygen.reactos.org/d8/d14/wincon_8h_source.html
 // TODO https://doxygen.reactos.org/d1/d58/wincontypes_8h_source.html
