@@ -386,7 +386,7 @@ CONSOLE_MSG_HEADER :: struct
     ApiDescriptorSize: ULONG;
 }
 
-CONSOLE_MSG_BODY_L1 :: struct
+CONSOLE_MSG_BODY_L1 :: union
 {
     GetConsoleCP: CONSOLE_GETCP_MSG;
     GetConsoleMode: CONSOLE_MODE_MSG;

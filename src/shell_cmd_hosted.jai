@@ -29,8 +29,7 @@ CmdHostedShell :: struct
     output_cp: UINT;
 
     // Incoming data from the shell will be in utf16, so we cant avoid (at least) a copy + conversion
-    // (ansi requires *2* conversions, first to utf16 and then to utf8)
-    // TODO Unless the CP is utf8 already!
+    // (ansi codepages require *2* conversions, first to utf16 and then to utf8)
     stagingBuffer: [] u8;
     outputBuffer: [] u8;
     outputByteCount: s64;
@@ -143,6 +142,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
         // if (ReplyMsg != nullptr)
         //     ReplyMsg->ReleaseMessageBuffers();
 
+        memset( *ReceiveMsg, 0xEE, size_of(CONSOLE_API_MSG) );
         // Read next command and optionally send result of the last one
         ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete then *io_complete else null,
                                xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
@@ -265,6 +265,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 send_io_complete = true;
                 if ReceiveMsg.Descriptor.Object == OUTPUT_HANDLE
                 {
+                    // TODO So, since we're passing a fake empty msg here, this means raw writes will always
+                    // be interpreted as ansi.. is that even right?
                     memset( *ReceiveMsg.u.consoleMsgL1.WriteConsole, 0, size_of(CONSOLE_WRITECONSOLE_MSG) );
                     // Required for Wait blocks to identify the right callback.
                     ReceiveMsg.msgHeader.ApiNumber = API_NUMBER_WRITECONSOLE;
@@ -307,13 +309,14 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         {
                             // TODO 
                             
-                            // case Api_GetConsoleCP;
-                            // {
-                            //     getcp_msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
-                            //     getcp_msg.CodePage = ifx getcp_msg.Output then output_cp else input_cp;
-                            //
-                            //     io_complete.IoStatus.Status = STATUS_SUCCESS;
-                            // }
+                            case .Api_GetConsoleCP;
+                            {
+                                getcp_msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
+                                getcp_msg.CodePage = ifx getcp_msg.Output then shell.output_cp else shell.input_cp;
+
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+
                             case .Api_GetConsoleMode;
                             {
                                 get_console_msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
@@ -321,6 +324,15 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                 get_console_msg.Mode = ifx ReceiveMsg.Descriptor.Object == INPUT_HANDLE
                                                        then shell.input_console_mode else shell.output_console_mode;
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+
+                            case .Api_WriteConsole;
+                            {
+                                if ReceiveMsg.Descriptor.Object == OUTPUT_HANDLE
+                                {
+                                    status := HandleWriteMessage( shell, *ReceiveMsg, *io_complete );
+                                    io_complete.IoStatus.Status = status;
+                                }
                             }
 
                             case .Api_GetConsoleLangId;
@@ -411,6 +423,10 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
             return STATUS_UNSUCCESSFUL;
         }
     }
+
+    // TODO Comb through ApiDispatchers::ServerWriteConsole, as there's a couple things going on there
+    // like returning the number of bytes we actually read in the received msg !?
+    // Where / how would be even return that? Is that supposed to be part of 'io_complete'??
 
     writtenBytes: ULONG;
     // TODO Write a simple cmdline app to test the various console output methods together with codepages etc
