@@ -397,7 +397,7 @@ CONSOLE_MSG_BODY_L1 :: union
     WriteConsole: CONSOLE_WRITECONSOLE_MSG;
     GetConsoleLangId: CONSOLE_LANGID_MSG;
 
-#if 1 // 64 bit
+#if false // defined(BUILD_WOW6432) && !defined(BUILD_WOW3232)
     MapBitmap: CONSOLE_MAPBITMAP_MSG64;
 else 
     MapBitmap: CONSOLE_MAPBITMAP_MSG;

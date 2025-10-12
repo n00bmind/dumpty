@@ -29,6 +29,11 @@ pop :: ( array: *[..] $T, count: int = 1 )
     array.count -= count;
 }
 
+cMin :: ( a: $T, b: T ) -> T #c_call
+{
+    return ifx a < b then a else b;
+}
+
 
 
 PackGlyphIndex :: ( x: int, y: int ) -> u32

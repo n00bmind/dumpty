@@ -933,6 +933,8 @@ ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *Gly
                         else
                         {
                             // TODO Shaping, font fallback, etc
+                            // TODO The 1-to-1 mapping of codepoint to glyph we're doing here is incorrect if we want full
+                            // Unicode support! "Code points do not occupy one column even in monospace fonts and terminals"
 
                             // Wikipedia states that continuation bytes 5 & 6 are "unused"
                             str := GetContiguousView( range, 4 );

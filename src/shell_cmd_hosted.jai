@@ -30,9 +30,8 @@ CmdHostedShell :: struct
 
     // Incoming data from the shell will be in utf16, so we cant avoid (at least) a copy + conversion
     // (ansi codepages require *2* conversions, first to utf16 and then to utf8)
-    stagingBuffer: [] u8;
-    outputBuffer: [] u8;
-    outputByteCount: s64;
+    stagingBuffer: [..] u8;
+    outputBuffer: [..] u8;
 
     eof: bool;
 }
@@ -55,9 +54,6 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     shell.consoleControl = xx GetProcAddress( LoadLibraryExA( "user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 ),
                                               "ConsoleControl" );
     assert( shell.consoleControl != null && "Failed retrieving entrypoint 'ConsoleControl' from user32.dll" );
-
-    // TODO 
-    shell.outputBuffer = NewArray( 1024 * 1024, u8 );
 
     shell.input_cp = GetOEMCP();
     shell.output_cp = GetOEMCP();
@@ -138,11 +134,6 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
     while !shell.eof
     {
-        // TODO Check ConsoleIoThread in terminal/src/host/srvinit.cpp
-        // if (ReplyMsg != nullptr)
-        //     ReplyMsg->ReleaseMessageBuffers();
-
-        memset( *ReceiveMsg, 0xEE, size_of(CONSOLE_API_MSG) );
         // Read next command and optionally send result of the last one
         ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete then *io_complete else null,
                                xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
@@ -297,6 +288,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 // Default is reply with failure
                 send_io_complete = true;
                 io_complete.IoStatus.Status = STATUS_UNSUCCESSFUL;
+                // TODO What are these for exactly?
                 io_complete.Write.Data = *ReceiveMsg.u;
                 io_complete.Write.Size = ReceiveMsg.msgHeader.ApiDescriptorSize;
 
@@ -311,19 +303,41 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             
                             case .Api_GetConsoleCP;
                             {
-                                getcp_msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
-                                getcp_msg.CodePage = ifx getcp_msg.Output then shell.output_cp else shell.input_cp;
+                                msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
+                                msg.CodePage = ifx msg.Output then shell.output_cp else shell.input_cp;
 
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                             }
 
                             case .Api_GetConsoleMode;
                             {
-                                get_console_msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
+                                msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
 
-                                get_console_msg.Mode = ifx ReceiveMsg.Descriptor.Object == INPUT_HANDLE
-                                                       then shell.input_console_mode else shell.output_console_mode;
+                                msg.Mode = ifx ReceiveMsg.Descriptor.Object == INPUT_HANDLE
+                                           then shell.input_console_mode else shell.output_console_mode;
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+
+                            case .Api_SetConsoleMode;
+                            {
+                                msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.SetConsoleMode;
+
+                                if ReceiveMsg.Descriptor.Object == INPUT_HANDLE
+                                    shell.input_console_mode = msg.Mode;
+                                else
+                                    shell.output_console_mode = msg.Mode;
+
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+
+                            case .Api_ReadConsole;
+                            {
+                                // TODO Seems like (at least in certain modes) we cannot return a response here
+                                // unless we actually return some data in it
+                                send_io_complete = false;
+
+                                // io_complete.IoStatus.Information = 0;
+                                // io_complete.IoStatus.Status = STATUS_SUCCESS;
                             }
 
                             case .Api_WriteConsole;
@@ -395,6 +409,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
     return 0;
 }
 
+// TODO Should we just push a context before calling in here?
+// Would be interesting to compare if there's any kind of measurable speed difference?
 HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
 {
     write_msg := *ReceiveMsg.u.consoleMsgL1.WriteConsole;
@@ -424,21 +440,85 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         }
     }
 
-    // TODO Comb through ApiDispatchers::ServerWriteConsole, as there's a couple things going on there
-    // like returning the number of bytes we actually read in the received msg !?
-    // Where / how would be even return that? Is that supposed to be part of 'io_complete'??
+    // TODO Review if we want / need to do anything for these flags:
+    // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    // ENABLE_PROCESSED_OUTPUT
+    // ENABLE_WRAP_AT_EOL_OUTPUT
 
     writtenBytes: ULONG;
     // TODO Write a simple cmdline app to test the various console output methods together with codepages etc
     // TODO Add CP handling to splat2 to benchmark the 3 branches here?
     if write_msg.Unicode
     {
-        // TODO Convert to utf8
+        // TODO Investigate faster conversion functions
+        // https://learn.microsoft.com/en-us/windows/win32/devnotes/rtlunicodetoutf8n
+        // https://doxygen.reactos.org/d0/d25/host_2wine_2unicode_8h.html#a4ebb1e7521c31f253a6ffff808adc668
 
+        // Copy to staging buffer
+        push_context
+        {
+            array_resize( *shell.stagingBuffer, totalBytes, false ); // Don't init the new range
+        }
+
+        read_op: CD_IO_OPERATION;
+        read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+        read_op.Buffer.Offset = readOffset;
+        read_op.Buffer.Data = shell.stagingBuffer.data;
+        read_op.Buffer.Size = totalBytes;
+
+        bytesRead: DWORD;
+        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
+                               0, *bytesRead, NULL );
+
+        if !ok || bytesRead < totalBytes
+            push_context
+            {
+                log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+                return STATUS_UNSUCCESSFUL;
+            }
+
+        // Convert to utf8
+        // TODO Convert directly into the final SourceBuffer location, using something like GetContiguousView
+        // Here we're writing though.. so we'll need an extra post-copy step when the length straddles the end of the buffer
+        totalChars := totalBytes / 2;
+        // Worst case is 3 utf8 code units (bytes) per utf16 code unit ("char")
+        maxRequiredBytes := totalChars * 3;
+        push_context
+        {
+            assert( totalBytes & 1 == 0 && "Incoming utf16 byte length is not divisible by 2" );
+            array_resize( *shell.outputBuffer, maxRequiredBytes, false ); // Don't init the new range
+        }
+
+        writtenBytes = xx WideCharToMultiByte( CP_UTF8, 0, xx shell.stagingBuffer.data, xx totalChars,
+                                               shell.outputBuffer.data, xx maxRequiredBytes, NULL, NULL );
+
+        if !writtenBytes
+            push_context
+            {
+                log_error( "WideCharToMultiByte failed: %\n", get_error_value_and_string() );
+                return STATUS_UNSUCCESSFUL;
+            }
+
+        // Finally copy to SourceBuffer
+        // TODO Atomics!
+        range: [] u8;
+        push_context
+        {
+            range = GetNextWriteableRange( shell.sourceBuffer );
+        }
+
+        // FIXME Ensure returned range can hold writtenBytes! It's just easier to do the GetContiguousView thing though..
+        memcpy( range.data, shell.outputBuffer.data, writtenBytes );
+        push_context
+        {
+            CommitWrite( shell.sourceBuffer, xx writtenBytes );
+        }
     }
     else
     {
         // TODO Investigate if there's a way to force set a utf8 codepage at the shell (cmd) level, so all spawned apps use that
+        // (surprise surprise.. look like this is a bit of a minefield: https://stackoverflow.com/a/57134096/2151254)
+
         // if shell.output_cp == CP_UTF8
         {
             // TODO Get some stats going for how many bytes per sec. the IO thread is actually filling here
@@ -459,7 +539,7 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                 read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
                 read_op.Buffer.Offset = readOffset;
                 read_op.Buffer.Data = range.data;
-                read_op.Buffer.Size = totalBytes - writtenBytes;
+                read_op.Buffer.Size = cMin( totalBytes - writtenBytes, cast(u32) range.count );
 
                 bytesRead: DWORD;
                 ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
@@ -468,11 +548,6 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                 {
                     if bytesRead
                     {
-                        // TODO TODO TODO Ensure we write a line terminator, but dont commit it so its overwritten next time
-                        // If we dont do this ParseLines will freak out because it doesnt know where to end!?
-                        // That's not making a lot of sense though.. How did this even work with other shells then?
-                        // range[ bytesRead ] = 10;
-
                         push_context
                         {
                             CommitWrite( shell.sourceBuffer, xx bytesRead );
