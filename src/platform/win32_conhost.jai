@@ -1071,7 +1071,7 @@ CONSOLE_MSG_BODY_L3 :: union
     VDMConsoleOperation: CONSOLE_VDM_MSG;
     ShowConsoleCursor: CONSOLE_SHOWCURSOR_MSG;
     SetConsoleDisplayMode: CONSOLE_SETDISPLAYMODE_MSG;
-#if 1
+#if 0 // defined(BUILD_WOW6432)
 {
     RegisterConsoleVDM: CONSOLE_REGISTERVDM_MSG64;
     SetConsoleCursor: CONSOLE_SETCURSOR_MSG64;

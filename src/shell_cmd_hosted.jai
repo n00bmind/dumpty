@@ -11,7 +11,10 @@ CmdHostedShell :: struct
     // base.getWaitableHandlesProc = CmdHostedShellGetWaitableHandles;
 
     consoleControl : #type ( Command: CONSOLECONTROL, Information: PVOID, Length: DWORD ) -> NTSTATUS #c_call;
-    sourceBuffer: *SourceBuffer;
+
+    // TODO This probably needs looser coupling, like a "platform API" of sorts
+    // While we're still WIP let's give it unrestricted access to everything..
+    appState: *AppState;
     lastSourceAbsP: s64;
 
     serverHandle: HANDLE;
@@ -49,7 +52,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
 {
     shell: *CmdHostedShell = xx base;
 
-    assert( shell.sourceBuffer && "Need a SourceBuffer!" );
+    assert( shell.appState && "Need access to the AppState!" );
 
     shell.consoleControl = xx GetProcAddress( LoadLibraryExA( "user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 ),
                                               "ConsoleControl" );
@@ -288,7 +291,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 // Default is reply with failure
                 send_io_complete = true;
                 io_complete.IoStatus.Status = STATUS_UNSUCCESSFUL;
-                // TODO What are these for exactly?
+                // User defined msgs that query for info get back a msg of the corresponding type here
+                // TODO Rename ReceiveMsg to ioMsg
                 io_complete.Write.Data = *ReceiveMsg.u;
                 io_complete.Write.Size = ReceiveMsg.msgHeader.ApiDescriptorSize;
 
@@ -368,6 +372,27 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         {
                             // TODO 
 
+                            case .Api_GetConsoleScreenBufferInfo;
+                            {
+                                msg: *CONSOLE_SCREENBUFFERINFO_MSG = *ReceiveMsg.u.consoleMsgL2.GetConsoleScreenBufferInfo;
+                                state := shell.appState.renderer;
+                                cursor := *state.lastCursor;
+
+                                // TODO Create a tester to ensure we're sending the correct info (in particular, srWindow?)
+                                // https://learn.microsoft.com/en-us/windows/console/console-screen-buffer-info-str
+                                // TODO Scroll pos / attributes?
+                                msg.FullscreenSupported = .FALSE;
+                                msg.CursorPosition = .{ xx cursor.x, xx cursor.y };
+                                msg.MaximumWindowSize = .{ xx state.cellCount.x, xx state.cellCount.y };
+                                msg.Size = .{ xx state.cellCount.x, xx state.cellCount.y };
+                                msg.CurrentWindowSize = .{ xx state.cellCount.x, xx state.cellCount.y };
+                                msg.ScrollPosition.x = 0;
+                                msg.ScrollPosition.y = 0;
+                                msg.Attributes = 0;
+                                msg.PopupAttributes = 0;
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
+
                             case;
                                 push_context
                                 {
@@ -381,6 +406,13 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         if l3_type ==
                         {
                             // TODO 
+
+                            case .Api_GetConsoleWindow;
+                            {
+                                msg: *CONSOLE_GETCONSOLEWINDOW_MSG = *ReceiveMsg.u.consoleMsgL3.GetConsoleWindow;
+                                msg.hwnd = shell.appState.renderer.window;
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                            }
 
                             case;
                                 push_context
@@ -504,14 +536,14 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         range: [] u8;
         push_context
         {
-            range = GetNextWriteableRange( shell.sourceBuffer );
+            range = GetNextWriteableRange( *shell.appState.sourceBuffer );
         }
 
         // FIXME Ensure returned range can hold writtenBytes! It's just easier to do the GetContiguousView thing though..
         memcpy( range.data, shell.outputBuffer.data, writtenBytes );
         push_context
         {
-            CommitWrite( shell.sourceBuffer, xx writtenBytes );
+            CommitWrite( *shell.appState.sourceBuffer, xx writtenBytes );
         }
     }
     else
@@ -532,7 +564,7 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                 range: [] u8;
                 push_context
                 {
-                    range = GetNextWriteableRange( shell.sourceBuffer );
+                    range = GetNextWriteableRange( *shell.appState.sourceBuffer );
                 }
 
                 read_op: CD_IO_OPERATION;
@@ -550,7 +582,7 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                     {
                         push_context
                         {
-                            CommitWrite( shell.sourceBuffer, xx bytesRead );
+                            CommitWrite( *shell.appState.sourceBuffer, xx bytesRead );
                         }
                         writtenBytes += bytesRead;
                     }

@@ -1,5 +1,3 @@
-#import "Math";
-#import "Input";
 #load "math.jai";
 #load "memory.jai";
 
@@ -46,9 +44,13 @@ RendererCell :: struct
 
 RendererState :: struct
 {
+    window: Window_Type;
+
     cells : [] RendererCell;
     loadedFont: *LoadedFont;
     palette: *[256] c3;
+
+    lastCursor: CursorState;
     savedCursor: CursorState;
 
     // NOTE This mirrors the ConstantsBlock in the GridShader
@@ -122,4 +124,11 @@ AppInitFunc :: #type ( memory: *AppMemory, renderer: *RendererState );
 AppShutdownFunc :: #type ( memory: *AppMemory );
 AppWaitForInputFunc :: #type ( memory: *AppMemory );
 AppUpdateAndRenderFunc :: #type ( input: AppInput, memory: *AppMemory, renderer: *RendererState );
+
+
+#scope_file
+
+#import "Math";
+#import "Input";
+#import "Window_Creation";
 

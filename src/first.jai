@@ -90,7 +90,7 @@ main :: ()
     }
 
     renderer : RendererState;
-    InitRendererState( *renderer, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
+    InitRendererState( *renderer, mainWindow, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
     
     quit := false;
     frameCount := 0;
@@ -132,7 +132,7 @@ main :: ()
                     windowWidth  = it.width;
                     windowHeight = it.height;
 
-                    InitRendererState( *renderer, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
+                    InitRendererState( *renderer, mainWindow, windowWidth, windowHeight, *loadedFont, glState.gridShader.maxCellCount );
                     print( "New window dimensions: %, %\n", windowWidth, windowHeight );
                 }
             }
@@ -243,8 +243,10 @@ glState: OpenGLState;
 
 
 // TODO Move to app?
-InitRendererState :: ( state: *RendererState, windowWidth: s32, windowHeight: s32, font: *LoadedFont, maxCellCount: s32 )
+InitRendererState :: ( state: *RendererState, window: Window_Type, windowWidth: s32, windowHeight: s32, font: *LoadedFont,
+                       maxCellCount: s32 )
 {
+    state.window       = window;
     state.loadedFont   = font;
     state.windowDim    = .{ windowWidth, windowHeight };
     state.cellSize     = .{ font.advance, font.lineHeight };

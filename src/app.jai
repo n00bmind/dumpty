@@ -11,7 +11,7 @@ AppInit :: ( memory: *AppMemory, renderer: *RendererState )
         appState := cast(*AppState) memory.appState;
         // appState.shell = CreateShell();
         hostedShell := New( CmdHostedShell );
-        hostedShell.sourceBuffer = *appState.sourceBuffer;
+        hostedShell.appState = appState;
         appState.shell = hostedShell;
 
         ret := appState.shell.startProc( appState.shell );
@@ -248,6 +248,23 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
 
 #import "String";
 
+AppState :: struct
+{
+    mainArena: MemoryArena;
+
+    renderer: *RendererState;
+    shell: *Shell;
+    builtinProcess: Process;
+
+    sourceBuffer: SourceBuffer;
+    lineOffset: s64;
+
+    glyphTable: GlyphTable;
+
+    commandLine: CommandLine;
+    lastInputSeconds: float64;
+}
+
 Shell :: struct
 {
     // TODO Would like all these to take a concrete *subtype* of Shell instead, but unsure how to do this
@@ -404,54 +421,8 @@ IsRunning :: ( process: Process ) -> bool
 #load "opengl.jai";
 
 
+
 BlinkTimeMillis :: 750;
-
-#if OS == .WINDOWS
-{
-    #import "Windows";
-
-    WAIT_ABANDONED_0 :: 0x00000080;
-
-    kernel32 :: #system_library "kernel32";
-    user32   :: #system_library "user32";
-    MsgWaitForMultipleObjects :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD ) -> DWORD #foreign user32;
-
-    QS_KEY            :: 0x0001;
-    QS_MOUSEMOVE      :: 0x0002;
-    QS_MOUSEBUTTON    :: 0x0004;
-    QS_MOUSE          :: (QS_MOUSEMOVE | QS_MOUSEBUTTON);
-    QS_POSTMESSAGE    :: 0x0008;
-    QS_TIMER          :: 0x0010;
-    QS_PAINT          :: 0x0020;
-    QS_SENDMESSAGE    :: 0x0040;
-    QS_HOTKEY         :: 0x0080;
-    QS_ALLPOSTMESSAGE :: 0x0100;
-    QS_RAWINPUT       :: 0x0400;
-    QS_TOUCH          :: 0x0800;
-    QS_POINTER        :: 0x1000;
-    QS_INPUT          :: (QS_MOUSE     | QS_KEY         | QS_RAWINPUT | QS_TOUCH | QS_POINTER);
-    QS_ALLEVENTS      :: (QS_INPUT     | QS_POSTMESSAGE | QS_TIMER    | QS_PAINT | QS_HOTKEY);
-    QS_ALLINPUT       :: (QS_ALLEVENTS | QS_SENDMESSAGE);
-}
-
-
-AppState :: struct
-{
-    mainArena: MemoryArena;
-
-    commandLine: CommandLine;
-    cursor: CursorState;
-
-    shell: *Shell;
-    builtinProcess: Process;
-
-    sourceBuffer: SourceBuffer;
-    lineOffset: s64;
-
-    glyphTable: GlyphTable;
-
-    lastInputSeconds: float64;
-}
 
 SourceBufferRange :: struct
 {
@@ -509,6 +480,8 @@ Init :: ( memory: *AppMemory, renderer: *RendererState ) -> *AppState
     Init( *appState.builtinProcess );
 
     renderer.palette = *DefaultPalette;
+
+    appState.renderer = renderer;
 
     return appState;
 }
@@ -885,8 +858,10 @@ LayoutScreenBuffer :: ( sourceBuffer: SourceBuffer, lineOffset: s64, commandLine
     }
 
     AdvanceRow( *cursor, renderer.cellCount );
-    // Track where we should start when mapping cells
+    // Track where we should start when mapping cells in the renderer
     renderer.firstRowY = cursor.y;
+
+    renderer.lastCursor = cursor;
 }
 
 ComputeRenderedGlyphs :: ( range: $Range, cursor: *CursorState, glyphTable: *GlyphTable, renderer: *RendererState )

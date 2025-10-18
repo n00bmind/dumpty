@@ -154,6 +154,24 @@ EVENT_ALL_ACCESS                    :: 0x1F0003;
 DUPLICATE_SAME_ACCESS               :: 0x00000002;
 ERROR_PIPE_NOT_CONNECTED            :: 233;
 
+WAIT_ABANDONED_0                    :: 0x00000080;
+QS_KEY                              :: 0x0001;
+QS_MOUSEMOVE                        :: 0x0002;
+QS_MOUSEBUTTON                      :: 0x0004;
+QS_MOUSE                            :: (QS_MOUSEMOVE | QS_MOUSEBUTTON);
+QS_POSTMESSAGE                      :: 0x0008;
+QS_TIMER                            :: 0x0010;
+QS_PAINT                            :: 0x0020;
+QS_SENDMESSAGE                      :: 0x0040;
+QS_HOTKEY                           :: 0x0080;
+QS_ALLPOSTMESSAGE                   :: 0x0100;
+QS_RAWINPUT                         :: 0x0400;
+QS_TOUCH                            :: 0x0800;
+QS_POINTER                          :: 0x1000;
+QS_INPUT                            :: (QS_MOUSE     | QS_KEY         | QS_RAWINPUT | QS_TOUCH | QS_POINTER);
+QS_ALLEVENTS                        :: (QS_INPUT     | QS_POSTMESSAGE | QS_TIMER    | QS_PAINT | QS_HOTKEY);
+QS_ALLINPUT                         :: (QS_ALLEVENTS | QS_SENDMESSAGE);
+
 
 UNICODE_STRING :: struct
 {
@@ -230,6 +248,9 @@ STARTUPINFOEXW :: struct
 ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
 user32 :: #system_library "user32";
+
+MsgWaitForMultipleObjects :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD )
+                               -> DWORD #foreign user32;
 
 NtOpenFile :: ( FileHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttributes: POBJECT_ATTRIBUTES,
                 IoStatusBlock: PIO_STATUS_BLOCK, ShareAccess: ULONG, OpenOptions: ULONG ) -> NTSTATUS #foreign ntdll;
