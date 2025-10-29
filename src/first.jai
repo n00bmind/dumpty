@@ -157,8 +157,6 @@ main :: ()
                         case .F4;
                         if it.alt_pressed
                             quit = true;
-                        //if it.key_code == .ESCAPE
-                        //quit = true;
                     }
                 }
 

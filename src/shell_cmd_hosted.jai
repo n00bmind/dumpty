@@ -7,6 +7,7 @@ CmdHostedShell :: struct
     base.startProc              = CmdHostedShellStart;
     // base.shutdownProc           = CmdHostedShellShutdown;
     // base.writeProc              = CmdHostedShellWrite;
+    base.writeEvProc            = CmdHostedShellWriteEv;
     base.readProc               = CmdHostedShellRead;
     // base.getWaitableHandlesProc = CmdHostedShellGetWaitableHandles;
 
@@ -35,6 +36,15 @@ CmdHostedShell :: struct
     // (ansi codepages require *2* conversions, first to utf16 and then to utf8)
     stagingBuffer: [..] u8;
     outputBuffer: [..] u8;
+
+    // TODO Just make this a growable array?
+    inputEvents: [8192] KeyEvent;
+    // TODO Atomics
+    absInputsReadPos: s64;
+    absInputsWritePos: s64;
+
+    // TODO Rename to 'pendingInputMsg'
+    delayed_io_msg: CONSOLE_API_MSG;
 
     eof: bool;
 }
@@ -138,9 +148,10 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
     while !shell.eof
     {
         // Read next command and optionally send result of the last one
-        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO, ifx send_io_complete then *io_complete else null,
-                               xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0, *ReceiveMsg, size_of(CONSOLE_API_MSG),
-                               *BytesRead, NULL );
+        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO,
+                               ifx send_io_complete then *io_complete else null,
+                               xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0,
+                               *ReceiveMsg, size_of(CONSOLE_API_MSG), *BytesRead, NULL );
 
         if !ok
         {
@@ -336,12 +347,22 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                             case .Api_ReadConsole;
                             {
-                                // TODO Seems like (at least in certain modes) we cannot return a response here
-                                // unless we actually return some data in it
-                                send_io_complete = false;
-
-                                // io_complete.IoStatus.Information = 0;
-                                // io_complete.IoStatus.Status = STATUS_SUCCESS;
+                                if ReceiveMsg.Descriptor.Object == INPUT_HANDLE
+                                {
+                                    status := HandleReadMessage( shell, *ReceiveMsg, *io_complete );
+                                    if status == STATUS_TIMEOUT
+                                    {
+                                        // Cannot immediately return a response here unless we actually have some data to return
+                                        send_io_complete = false;
+                                        // Store the current msg for processing as new input comes in
+                                        shell.delayed_io_msg = ReceiveMsg;
+                                        // has_delayed_io_msg = true;
+                                    }
+                                    else
+                                    {
+                                        io_complete.IoStatus.Status = status;
+                                    }
+                                }
                             }
 
                             case .Api_WriteConsole;
@@ -439,6 +460,33 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
     }
 
     return 0;
+}
+
+HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
+{
+    line_mode_enabled := shell.input_console_mode & ENABLE_LINE_INPUT;
+
+     // TODO Atomics / lock
+    readPos := shell.absInputsReadPos % shell.inputEvents.count;
+    writePos := shell.absInputsWritePos % shell.inputEvents.count;
+
+    // Nothing to read
+    if readPos == writePos
+        return STATUS_TIMEOUT;
+
+    read_msg: *CONSOLE_READCONSOLE_MSG = *ReceiveMsg.u.consoleMsgL1.ReadConsole;
+
+    // TODO Check Terminal code to figure out what this is about
+    if read_msg.InitialNumBytes
+        return STATUS_NOT_SUPPORTED;
+
+    write_op: CD_IO_OPERATION;
+    write_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+    // no offset with raw requests
+    write_op.Buffer.Offset = ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_READ
+                             then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize;
+
+    return STATUS_SUCCESS;
 }
 
 // TODO Should we just push a context before calling in here?
@@ -628,4 +676,24 @@ CmdHostedShellRead :: ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_R
     // shell.lastSourceAbsP = absStartP;
 
     return result, totalBytes;
+}
+
+CmdHostedShellWriteEv :: ( base: *Shell, event: KeyEvent ) -> bool
+{
+    shell: *CmdHostedShell = xx base;
+
+    // TODO Atomics
+    // TODO There's no atomic way to both increment this counter while also ensuring we havent overflowed the inputEvents
+    // and hence we're writing to a position that's being concurrently read or whatever..
+    // Also, what's the strategy for really long lines here?
+    // So this probably requires a mutex!
+    writePos := shell.absInputsWritePos % shell.inputEvents.count;
+    shell.absInputsWritePos += 1;
+
+    shell.inputEvents[writePos] = event;
+
+    // TODO We're also supposed to call this on every buffer resize event
+    SetEvent( shell.inputEventHandle );
+
+    return true;
 }

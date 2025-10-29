@@ -249,6 +249,7 @@ ntdll :: #system_library "ntdll";
 kernel32 :: #system_library "kernel32";
 user32 :: #system_library "user32";
 
+WaitForSingleObjectEx :: ( hHandle: HANDLE, dwMilliseconds: DWORD, bAlertable: BOOL ) -> DWORD #foreign kernel32;
 MsgWaitForMultipleObjects :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD )
                                -> DWORD #foreign user32;
 
@@ -257,6 +258,7 @@ NtOpenFile :: ( FileHandle: PHANDLE, DesiredAccess: ACCESS_MASK, ObjectAttribute
 
 CreateEventExW :: ( sa: *SECURITY_ATTRIBUTES, name: PCWSTR, flags: DWORD, access: DWORD )
                     -> HANDLE #foreign kernel32;
+SetEvent :: ( hEvent: HANDLE ) -> BOOL #foreign kernel32;
 
 DuplicateHandle :: ( hSourceProcessHandle: HANDLE, hSourceHandle: HANDLE, hTargetProcessHandle: HANDLE,
                      lpTargetHandle: PHANDLE, dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwOptions: DWORD )
@@ -264,14 +266,10 @@ DuplicateHandle :: ( hSourceProcessHandle: HANDLE, hSourceHandle: HANDLE, hTarge
 
 InitializeProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, count: DWORD,
                                         flags: DWORD, size: *SIZE_T ) -> BOOL #foreign kernel32;
-
 UpdateProcThreadAttribute :: ( list: *PROC_THREAD_ATTRIBUTE_LIST, flags: DWORD,
                                 attr: DWORD_PTR, value: *void, size: SIZE_T,
                                 prev_ret: *void, size_ret: *SIZE_T ) -> BOOL #foreign kernel32;
-
 DeleteProcThreadAttributeList :: ( list: *PROC_THREAD_ATTRIBUTE_LIST ) -> void #foreign kernel32;
-
-WaitForSingleObjectEx :: ( hHandle: HANDLE, dwMilliseconds: DWORD, bAlertable: BOOL ) -> DWORD #foreign kernel32;
 
 DeviceIoControl :: ( handle: HANDLE, code: DWORD, in_buff: *void, in_count: DWORD, out_buff: *void, out_count: DWORD,
                      returned: *DWORD, overlapped: *OVERLAPPED ) -> BOOL #foreign kernel32;

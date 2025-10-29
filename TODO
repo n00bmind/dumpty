@@ -28,6 +28,9 @@
 
 - Curious how this works? https://asciinema.org/
 
+- At some point we'll need to generate a release exe that doesnt spawn a command prompt. See this for ref:
+  https://github.com/onelivesleft/jai-cookbook/blob/master/compiling/windows_application.jai
+
 
 # CMDPTY
 - Console char dimensions are currently hardcoded (understand what the deal is with these)

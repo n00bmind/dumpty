@@ -55,100 +55,116 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
     // Process this frame's window events
     for input.events
     {
+        // TODO Probably will want to move everything related to the custom command line & history into the shell
+        // for better integration
         if it.type ==
         {
             case .KEYBOARD;
-            if it.key_code ==
             {
-                case .PAGE_UP;
-                {
-                    // TODO We should probably just add an offset in bytes based on the current screen size,
-                    // then let the layout function solve for the right line to start with
-                    // TODO i.e. this should scroll half a page of *VISUAL* lines
-                    // TODO Test with some good ol structured data
-                    newOffset := appState.lineOffset;
-                    newOffset += renderer.cellCount.y / 2;
-                    newOffset = Min( newOffset, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
-                    // Still need to check we're not showing too far back into sourceBuffer (wrapping around content)
-                    absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absLineIdx, newOffset,
-                                                                   renderer.cellCount.y );
-                    line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LinesMask ];
-                    if line.absStartPos < appState.sourceBuffer.absHeadPos - SourceBuffer.MaxSize
-                        newOffset = appState.lineOffset;
+                // NOTE Key_Code includes esoteric stuff like gamepad buttons as "keys"
+                writeEvent := it.key_code <= .PRINT_SCREEN;
 
-                    appState.lineOffset = newOffset;
-                }
-                case .PAGE_DOWN;
+                if it.key_code ==
                 {
-                    appState.lineOffset -= renderer.cellCount.y / 2;
-                    appState.lineOffset = Max( 0, appState.lineOffset );
-                }
-
-                case .ARROW_UP;
-                    // Ensure we dont ever underflow the array
-                    minHistoryIdx := ifx cmdline.history.nextEntryAbsIdx >= CommandLineHistory.MaxEntries
-                        then cmdline.history.nextEntryAbsIdx - CommandLineHistory.MaxEntries + 1
-                        else 0;
-                    if cmdline.history.displayedAbsIdx > minHistoryIdx
+                    case .PAGE_UP;
                     {
-                        cmdline.history.displayedAbsIdx -= 1;
-                        RetrieveHistoryEntry( cmdline );
+                        // TODO We should probably just add an offset in bytes based on the current screen size,
+                        // then let the layout function solve for the right line to start with
+                        // TODO i.e. this should scroll half a page of *VISUAL* lines
+                        // TODO Test with some good ol structured data
+                        newOffset := appState.lineOffset;
+                        newOffset += renderer.cellCount.y / 2;
+                        newOffset = Min( newOffset, appState.sourceBuffer.lines.count - renderer.cellCount.y - 1 );
+                        // Still need to check we're not showing too far back into sourceBuffer (wrapping around content)
+                        absStartLineIdx := GetFirstScreenLineAbsIndex( appState.sourceBuffer.absLineIdx, newOffset,
+                                                                       renderer.cellCount.y );
+                        line := appState.sourceBuffer.lines[ absStartLineIdx & SourceBuffer.LinesMask ];
+                        if line.absStartPos < appState.sourceBuffer.absHeadPos - SourceBuffer.MaxSize
+                            newOffset = appState.lineOffset;
+
+                        appState.lineOffset = newOffset;
                     }
-                case .ARROW_DOWN;
-                    if cmdline.history.displayedAbsIdx < cmdline.history.nextEntryAbsIdx
+                    case .PAGE_DOWN;
                     {
-                        cmdline.history.displayedAbsIdx += 1;
-                        RetrieveHistoryEntry( cmdline );
+                        appState.lineOffset -= renderer.cellCount.y / 2;
+                        appState.lineOffset = Max( 0, appState.lineOffset );
                     }
 
-                case .BACKSPACE;
-                    // appState.shell.writeProc( appState.shell, "\x08" );
-                    if cmdline.input.count > 0
-                        pop( *cmdline.input );
-
-                case .ENTER;
-                {
-                    if cmdline
-                    {
-                        UpdateHistoryEntry( cmdline );
-                        // TODO We should probably "collapse" (i.e. discard) the entered line
-                        // if the previous history entry was identical..
-                        CommitHistoryEntry( cmdline );
-                    }
-
-                    if begins_with( xx cmdline.input, "#" )
-                    {
-                        AppendToSourceBuffer( *appState.sourceBuffer,
-                                              tprint( "%\n", cast(string) cmdline.input ),
-                                              renderer );
-                        if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input,
-                                                   appState, renderer )
+                    case .ARROW_UP;
+                        // Ensure we dont ever underflow the array
+                        minHistoryIdx := ifx cmdline.history.nextEntryAbsIdx >= CommandLineHistory.MaxEntries
+                                         then cmdline.history.nextEntryAbsIdx - CommandLineHistory.MaxEntries + 1
+                                         else 0;
+                        if cmdline.history.displayedAbsIdx > minHistoryIdx
                         {
-                            AppendToSourceBuffer( *appState.sourceBuffer,
-                                                  "<<dumpty>> Internal error executing builtin command\n",
-                                                  renderer );
+                            cmdline.history.displayedAbsIdx -= 1;
+                            RetrieveHistoryEntry( cmdline );
                         }
-                    }
-                    else
+                    case .ARROW_DOWN;
+                        if cmdline.history.displayedAbsIdx < cmdline.history.nextEntryAbsIdx
+                        {
+                            cmdline.history.displayedAbsIdx += 1;
+                            RetrieveHistoryEntry( cmdline );
+                        }
+
+                    case .BACKSPACE;
+                        // appState.shell.writeProc( appState.shell, "\x08" );
+                        if cmdline.input.count > 0
+                            pop( *cmdline.input );
+
+                    case .ENTER;
                     {
-                        // appState.shell.writeProc( appState.shell, "\n" );
-                        //
-                        // TODO nested WSL doesnt like this. We probably need to somehow listen to input/output console mode changes..
-                        // Either that or we're gonna need to customize this per shell as well..
-                        push( *cmdline.input, "\r" );
-                        push( *cmdline.input, "\n" );
-                        if !appState.shell.writeProc( appState.shell, xx cmdline.input )
-                            AppendToSourceBuffer( *appState.sourceBuffer,
-                                                  "<<dumpty>> Internal error executing shell command\n",
+                        if cmdline
+                        {
+                            UpdateHistoryEntry( cmdline );
+                            // TODO We should probably "collapse" (i.e. discard) the entered line
+                            // if the previous history entry was identical..
+                            CommitHistoryEntry( cmdline );
+                        }
+
+                        if begins_with( xx cmdline.input, "#" )
+                        {
+                            AppendToSourceBuffer( *appState.sourceBuffer, tprint( "%\n", cast(string) cmdline.input ),
                                                   renderer );
+                            if !ExecuteBuiltinCommand( *appState.builtinProcess, cmdline.input, appState, renderer )
+                            {
+                                AppendToSourceBuffer( *appState.sourceBuffer,
+                                "<<dumpty>> Internal error executing builtin command\n",
+                                renderer );
+                            }
+                        }
+                        else
+                        {
+                            // appState.shell.writeProc( appState.shell, "\n" );
+                            //
+                            // TODO nested WSL doesnt like this. We probably need to somehow listen to input/output console mode changes..
+                            // Either that or we're gonna need to customize this per shell as well..
+                            push( *cmdline.input, "\r" );
+                            push( *cmdline.input, "\n" );
+                            if !appState.shell.writeProc( appState.shell, xx cmdline.input )
+                                AppendToSourceBuffer( *appState.sourceBuffer,
+                                                        "<<dumpty>> Internal error executing shell command\n",
+                                                        renderer );
+                        }
+
+                        cmdline.input.count = 0;
                     }
 
-                    cmdline.input.count = 0;
+                    case .F10;
+                    {
+                        renderer.debugDrawAtlas = !renderer.debugDrawAtlas;
+                    }
                 }
 
-                case .F10;
+                if writeEvent
                 {
-                    renderer.debugDrawAtlas = !renderer.debugDrawAtlas;
+                    ev: KeyEvent;
+                    ev.keyCode = it.key_code;
+                    ev.modifiers = it.modifier_flags;
+                    ev.isPressed = it.key_pressed != 0;
+                    ev.repeat = it.repeat;
+
+                    appState.shell.writeEvProc( appState.shell, ev );
                 }
             }
 
@@ -156,13 +172,23 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
             {
                 value := it.utf32;
 
-                // The theoretical maximum for UTF8 is 6 bytes
-                str := alloc_string( 6 ,, temp );
+                // The maximum for UTF8 in practice is 4 bytes
+                str := alloc_string( 4 ,, temp );
                 character_utf32_to_utf8( value, *str );
-                // appState.shell.writeProc( appState.shell, str );
+
+                ev: KeyEvent;
+                ev.keyCode = it.key_code;
+                ev.utf32 = it.utf32;
+                ev.modifiers = it.modifier_flags;
+                ev.isPressed = it.key_pressed != 0;
+                ev.repeat = it.repeat;
+
+                appState.shell.writeEvProc( appState.shell, ev );
+
+                // TODO Probably will want to move everything related to the custom command line & history into the shell
                 push( *cmdline.input, str );
-                
                 UpdateHistoryEntry( cmdline );
+
                 appState.lastInputSeconds = seconds_since_init();
             }
         }
@@ -271,8 +297,18 @@ Shell :: struct
     startProc: #type ( base: *Shell ) -> bool;
     shutdownProc: #type ( base: *Shell );
     writeProc: #type ( base: *Shell, str: string ) -> bool;
+    writeEvProc: #type ( base: *Shell, event: KeyEvent ) -> bool;
     readProc: #type ( base: *Shell, sourceBuffer: *SourceBuffer ) -> Process_Result, s64;
     getWaitableHandlesProc: #type ( base: *Shell, handles: [] HANDLE, handleCount: *u32 );
+}
+
+KeyEvent :: struct
+{
+    keyCode: Key_Code;
+    utf32: u32;
+    modifiers: Event.Modifier_Flags;
+    isPressed: bool;
+    repeat: bool;
 }
 
 SourceBuffer :: struct
