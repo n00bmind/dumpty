@@ -77,8 +77,7 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     CreateClientHandle( *refHandle, shell.serverHandle, "\\Reference", .FALSE );
 
     shell.inputEventHandle = CreateEventExW( NULL, NULL, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
-    // TODO Presumably we dont need to manually reset this?
-    // shell.keyEventHandle = CreateEventExW( NULL, NULL, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
+    // NOTE Make this one auto-reset
     shell.keyEventHandle = CreateEventExW( NULL, NULL, 0, EVENT_ALL_ACCESS );
 
     bytes: DWORD;
@@ -151,13 +150,17 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
     while !shell.eof
     {
+        // NOTE Not specifying an event here means the serverHandle itself will be what gets signaled
+        overlapped: OVERLAPPED;
+        // overlapped.hEvent = shell.keyEventHandle;
+
         // Read next command and optionally send result of the last one
-        // TODO See if we can do this async
-        // https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/june/concurrent-affairs-asynchronous-device-operations
+        // NOTE Reference code always does this synchronously, but it seems passing an overlapped struct here works as well..
+        // So we'll just do it async, then wait just below for both this and new user input
         ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO,
                                ifx send_io_complete then *io_complete else null,
                                xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0,
-                               *ReceiveMsg, size_of(CONSOLE_API_MSG), *BytesRead, NULL );
+                               *ReceiveMsg, size_of(CONSOLE_API_MSG), *BytesRead, *overlapped );
 
         if !ok
         {
@@ -168,14 +171,57 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
             if err == ERROR_IO_PENDING
             {
                 // Nothing to process atm, so go to sleep
-                // Wait for either a new IOCTL, or new user input
-                // TODO Sooo.. WTH 0 here means "dont wait"!?
-                WaitForSingleObjectEx( shell.serverHandle, 0, .FALSE );
+                // while true
+                {
+                    // Wait for either a new IOCTL, or new user input
+                    // TODO How do we gracefully stop this thread during shutdown
+                    handles: [2] HANDLE = .[ shell.serverHandle, shell.keyEventHandle ];
+                    result := WaitForMultipleObjectsEx( handles.count, handles.data, .FALSE, INFINITE, .FALSE );
 
-                 // TODO Are arrays ever on the stack in Jai!?
-                // handles: [2] HANDLE = .[ shell.serverHandle, shell.keyEventHandle ];
-                // result := WaitForMultipleObjectsEx( handles.count, handles.data, .FALSE,
-                //                                     timeout, .FALSE );
+                    if result == WAIT_FAILED
+                    {
+                        push_context
+                        {
+                            log_error( "Failed waiting for IOCTLs & input\n" );
+                        }
+                        return 1;
+                    }
+                    else
+                    {
+                        // Result value indicates the *FIRST* signaled handle (both could be signaled at the same time!)
+                        // According to the docs, this handle will be the only one that will be reset.
+                        signaledHandleIdx := result - WAIT_OBJECT_0;
+                        if signaledHandleIdx ==
+                        {
+                            case 0;
+                            {
+                                // Got an IOCTL to service, so break out of the wait loop and handle it below
+                                // break;
+                            }
+                            case 1;
+                            {
+                                // Got user input. If we have a pending read msg, set that as the received msg
+                                // so that the right handler below is re-triggered
+                                if shell.delayed_io_msg.Descriptor.Function
+                                {
+                                    ReceiveMsg = shell.delayed_io_msg;
+                                    // break;
+                                }
+                                // else
+                                    // TODO When there's no pending msg, can we just fall through below
+                                    // and request an IOCTL again, or should we immediately go back to waiting?
+                            }
+                            case;
+                            {
+                                push_context
+                                {
+                                    assert( false && "Invalid signaled handle index" );
+                                }
+                                return 1;
+                            }
+                        }
+                    }
+                }
             }
             else
             {
@@ -369,7 +415,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                     status := HandleReadMessage( shell, *ReceiveMsg, *io_complete );
                                     if status == STATUS_TIMEOUT
                                     {
-                                        // Cannot immediately return a response here unless we actually have some data to return
+                                        // Cannot immediately return a response here unless we actually have data to return
                                         send_io_complete = false;
                                         // Store the current msg for processing as new input comes in
                                         shell.delayed_io_msg = ReceiveMsg;
@@ -378,6 +424,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                     else
                                     {
                                         io_complete.IoStatus.Status = status;
+                                        // Clean up any pending msg we had
+                                        shell.delayed_io_msg = .{};
                                     }
                                 }
                             }
@@ -469,10 +517,13 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
             }
 
             case;
-                push_context
-                {
-                    log_warn( "Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
-                }
+                // We let control fall through to the handling code when we got user input but there's no pending read msg
+                // So we could have an empty msg descriptor here, which is utterly uninteresting.
+                if ReceiveMsg.Descriptor.Function
+                    push_context
+                    {
+                        log_warn( "Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
+                    }
         }
     }
 

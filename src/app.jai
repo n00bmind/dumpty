@@ -154,6 +154,10 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
                     {
                         renderer.debugDrawAtlas = !renderer.debugDrawAtlas;
                     }
+
+                    case;
+                        // For anything textual, let TEXT_INPUT handle it below
+                        writeEvent = false;
                 }
 
                 if writeEvent
@@ -1859,7 +1863,7 @@ WaitForAllOpenHandles :: ( appState: *AppState, timeoutMs := -1 ) -> bool
     if result == WAIT_FAILED
     {
         // TODO Logs / diagnotics
-        log_error("Unable to read command's output.\n");
+        log_error( "Failed waiting for input\n" );
         return false;
     }
     // else

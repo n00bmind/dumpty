@@ -250,6 +250,8 @@ kernel32 :: #system_library "kernel32";
 user32 :: #system_library "user32";
 
 WaitForSingleObjectEx :: ( hHandle: HANDLE, dwMilliseconds: DWORD, bAlertable: BOOL ) -> DWORD #foreign kernel32;
+WaitForMultipleObjectsEx :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, bAlertable: BOOL )
+                              -> DWORD #foreign kernel32;
 MsgWaitForMultipleObjects :: ( nCount: DWORD, lpHandles: *HANDLE, bWaitAll: BOOL, dwMilliseconds: DWORD, dwWakeMask: DWORD )
                                -> DWORD #foreign user32;
 
