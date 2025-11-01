@@ -21,6 +21,7 @@ CmdHostedShell :: struct
     serverHandle: HANDLE;
     ioThreadHandle: HANDLE;
     inputEventHandle: HANDLE;
+    keyEventHandle: HANDLE;
     // processInfo: PROCESS_INFORMATION;
     // consoleHandle: HPCON;
     // pipeHandle: HANDLE;
@@ -76,6 +77,9 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     CreateClientHandle( *refHandle, shell.serverHandle, "\\Reference", .FALSE );
 
     shell.inputEventHandle = CreateEventExW( NULL, NULL, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
+    // TODO Presumably we dont need to manually reset this?
+    // shell.keyEventHandle = CreateEventExW( NULL, NULL, CREATE_EVENT_MANUAL_RESET, EVENT_ALL_ACCESS );
+    shell.keyEventHandle = CreateEventExW( NULL, NULL, 0, EVENT_ALL_ACCESS );
 
     bytes: DWORD;
     serverInfo: CD_IO_SERVER_INFORMATION;
@@ -148,6 +152,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
     while !shell.eof
     {
         // Read next command and optionally send result of the last one
+        // TODO See if we can do this async
+        // https://learn.microsoft.com/en-us/archive/msdn-magazine/2007/june/concurrent-affairs-asynchronous-device-operations
         ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_IO,
                                ifx send_io_complete then *io_complete else null,
                                xx ifx send_io_complete size_of(CD_IO_COMPLETE) else 0,
@@ -160,7 +166,17 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
             err := GetLastError();
 
             if err == ERROR_IO_PENDING
+            {
+                // Nothing to process atm, so go to sleep
+                // Wait for either a new IOCTL, or new user input
+                // TODO Sooo.. WTH 0 here means "dont wait"!?
                 WaitForSingleObjectEx( shell.serverHandle, 0, .FALSE );
+
+                 // TODO Are arrays ever on the stack in Jai!?
+                // handles: [2] HANDLE = .[ shell.serverHandle, shell.keyEventHandle ];
+                // result := WaitForMultipleObjectsEx( handles.count, handles.data, .FALSE,
+                //                                     timeout, .FALSE );
+            }
             else
             {
                 if err == ERROR_PIPE_NOT_CONNECTED
@@ -174,6 +190,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                     {
                         log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
                     }
+                    // TODO Is the shell monitoring the status of this thread anywhere?
                     return 1;
                 }
             }
@@ -464,11 +481,10 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
 HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
 {
-    line_mode_enabled := shell.input_console_mode & ENABLE_LINE_INPUT;
-
      // TODO Atomics / lock
     readPos := shell.absInputsReadPos % shell.inputEvents.count;
     writePos := shell.absInputsWritePos % shell.inputEvents.count;
+    lastWritePos := (shell.absInputsWritePos - 1) % shell.inputEvents.count;
 
     // Nothing to read
     if readPos == writePos
@@ -480,11 +496,37 @@ HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_
     if read_msg.InitialNumBytes
         return STATUS_NOT_SUPPORTED;
 
+    writeBuffer: [..] u8;
+
     write_op: CD_IO_OPERATION;
     write_op.Identifier = ReceiveMsg.Descriptor.Identifier;
     // no offset with raw requests
     write_op.Buffer.Offset = ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_READ
                              then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize;
+
+     // TODO Line mode, etc.
+    line_mode_enabled := shell.input_console_mode & ENABLE_LINE_INPUT;
+    if line_mode_enabled
+    {
+        // FIXME Cannot do this, as there may have been new inputs since
+        // Should probably just check on push and count them up?
+        // lastChar := shell.inputEvents[lastWritePos];
+        // if lastChar != #char "\n"
+        //     return STATUS_TIMEOUT;
+
+    }
+
+
+    // TODO bytesWritten?
+    BytesRead: DWORD;
+    ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_WRITE_OUTPUT, *write_op,
+                           size_of(CD_IO_OPERATION), NULL, 0, *BytesRead, NULL );
+    if !ok
+        // FIXME How do we convert this to NTSTATUS?
+        return xx GetLastErrorAsHr();
+
+    io_complete.IoStatus.Information = write_op.Buffer.Size;
+    read_msg.NumBytes = write_op.Buffer.Size;
 
     return STATUS_SUCCESS;
 }
@@ -683,16 +725,19 @@ CmdHostedShellWriteEv :: ( base: *Shell, event: KeyEvent ) -> bool
     shell: *CmdHostedShell = xx base;
 
     // TODO Atomics
-    // TODO There's no atomic way to both increment this counter while also ensuring we havent overflowed the inputEvents
-    // and hence we're writing to a position that's being concurrently read or whatever..
-    // Also, what's the strategy for really long lines here?
-    // So this probably requires a mutex!
-    writePos := shell.absInputsWritePos % shell.inputEvents.count;
+    writePos := shell.absInputsWritePos;
+    // Ensure it fits
+    // TODO When in line mode, we should always leave one last slot free for the newline!
+    // TODO assert_or_return
+    assert( writePos < shell.absInputsReadPos + shell.inputEvents.count );
+
+    writePos = writePos % shell.inputEvents.count;
     shell.absInputsWritePos += 1;
 
     shell.inputEvents[writePos] = event;
 
     // TODO We're also supposed to call this on every buffer resize event
+    SetEvent( shell.keyEventHandle );
     SetEvent( shell.inputEventHandle );
 
     return true;

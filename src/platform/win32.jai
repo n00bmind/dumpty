@@ -1,7 +1,7 @@
 
 //// Some utilities
 
-HRESULT_FROM_WIN32 :: inline ( x: u32 ) -> HRESULT
+HRESULT_FROM_WIN32 :: inline ( x: u32 ) -> HRESULT #c_call
 { 
     FACILITY_WIN32 :: 0x0007;
 
@@ -10,7 +10,7 @@ HRESULT_FROM_WIN32 :: inline ( x: u32 ) -> HRESULT
         else cast(HRESULT) ((x & 0x0000FFFF) | (FACILITY_WIN32 << 16) | 0x80000000);
 }
 
-GetLastErrorAsHr :: inline () -> HRESULT
+GetLastErrorAsHr :: inline () -> HRESULT #c_call
 {
     return HRESULT_FROM_WIN32( GetLastError() );
 }
