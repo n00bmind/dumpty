@@ -252,7 +252,6 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
         INPUT_HANDLE  :: 123;
         OUTPUT_HANDLE :: 456;
 
-
         if ReceiveMsg.Descriptor.Function ==
         {
             case CONSOLE_IO_CONNECT;
@@ -359,7 +358,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
             case CONSOLE_IO_USER_DEFINED;
             {
-                LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24) - 1;
+                LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24);
                 ApiNumber: ULONG = ReceiveMsg.msgHeader.ApiNumber & 0xffffff;
 
                 // Default is reply with failure
@@ -372,7 +371,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                 if LayerNumber ==
                 {
-                    case 0;
+                    case 1;
                     {
                         l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
                         if l1_type ==
@@ -447,11 +446,11 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             case;
                                 push_context
                                 {
-                                    log_warn( "Unhandled L1 request %\n", ApiNumber );
+                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l1_type );
                                 }
                         }
                     }
-                    case 1;
+                    case 2;
                     {
                         l2_type := cast(CONSOLE_L2_API_TYPE) ApiNumber;
                         if l2_type ==
@@ -479,14 +478,52 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                             }
 
+                            case .Api_GetConsoleTitle;
+                            {
+                                msg: *CONSOLE_GETTITLE_MSG = *ReceiveMsg.u.consoleMsgL2.GetConsoleTitle;
+                                push_context
+                                {
+                                    assert( msg.Unicode && "Non Unicode not supported" );
+                                }
+
+                                wstr: PCWSTR;
+                                bytes: s32;
+                                push_context
+                                {
+                                    // TODO 
+                                    // TODO Does this include the terminator
+                                    wstr, bytes = WideStrTmp( "dumpty" );
+                                }
+
+                                write_op: CD_IO_OPERATION;
+                                write_op.Identifier = ReceiveMsg.Descriptor.Identifier;
+                                write_op.Buffer.Offset = ReceiveMsg.msgHeader.ApiDescriptorSize;
+                                write_op.Buffer.Data = wstr;
+                                write_op.Buffer.Size = xx bytes;
+
+                                BytesRead: DWORD;
+                                ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_WRITE_OUTPUT, *write_op,
+                                                       size_of(CD_IO_OPERATION), NULL, 0, *BytesRead, NULL );
+
+                                push_context
+                                {
+                                    // FIXME How do we convert this to NTSTATUS?
+                                    hr := ifx ok then S_OK else GetLastErrorAsHr();
+                                    assert( SUCCEEDED(hr) );
+                                }
+
+                                io_complete.IoStatus.Status = STATUS_SUCCESS;
+                                io_complete.IoStatus.Information = xx bytes;
+                            }
+
                             case;
                                 push_context
                                 {
-                                    log_warn( "Unhandled L2 request %\n", ApiNumber );
+                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l2_type );
                                 }
                         }
                     }
-                    case 2;
+                    case 3;
                     {
                         l3_type := cast(CONSOLE_L3_API_TYPE) ApiNumber;
                         if l3_type ==
@@ -503,7 +540,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             case;
                                 push_context
                                 {
-                                    log_warn( "Unhandled L3 request %\n", ApiNumber );
+                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l3_type );
                                 }
                         }
                     }
@@ -511,7 +548,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                     case;
                         push_context
                         {
-                            log_error( "Unknown layer % request %\n", LayerNumber, ApiNumber );
+                            log_error( "### Unknown layer % request %\n", LayerNumber, ApiNumber );
                         }
                 }
             }
@@ -522,9 +559,34 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 if ReceiveMsg.Descriptor.Function
                     push_context
                     {
-                        log_warn( "Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
+                        log_warn( "### Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
                     }
         }
+
+        // TODO The error we're getting spammed with seems to be ERROR_WRITE_FAULT (generic winerror.h code)
+        push_context
+        {
+            if ReceiveMsg.Descriptor.Function == CONSOLE_IO_USER_DEFINED
+            {
+                LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24);
+                ApiNumber: ULONG = ReceiveMsg.msgHeader.ApiNumber & 0xffffff;
+                if LayerNumber ==
+                {
+                    case 1;
+                        l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
+                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l1_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
+                    case 2;
+                        l2_type := cast(CONSOLE_L2_API_TYPE) ApiNumber;
+                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l2_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
+                    case 3;
+                        l3_type := cast(CONSOLE_L3_API_TYPE) ApiNumber;
+                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l3_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
+                }
+            }
+            else
+                log( "-> IOCTL %\n", ReceiveMsg.Descriptor.Function );
+        }
+
     }
 
     return 0;
