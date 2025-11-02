@@ -376,8 +376,6 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
                         if l1_type ==
                         {
-                            // TODO 
-                            
                             case .Api_GetConsoleCP;
                             {
                                 msg := *ReceiveMsg.u.consoleMsgL1.GetConsoleCP;
@@ -386,13 +384,23 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                             }
 
+                            // TODO Looks like if we dont reply to this, cmd tries to make everything go through raw msgs..
+                            // May be interesting..!?
                             case .Api_GetConsoleMode;
                             {
                                 msg: *CONSOLE_MODE_MSG = *ReceiveMsg.u.consoleMsgL1.GetConsoleMode;
 
-                                msg.Mode = ifx ReceiveMsg.Descriptor.Object == INPUT_HANDLE
-                                           then shell.input_console_mode else shell.output_console_mode;
+                                if ReceiveMsg.Descriptor.Object == INPUT_HANDLE
+                                    msg.Mode = shell.input_console_mode;
+                                else
+                                    msg.Mode = shell.output_console_mode;
+
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
+
+                                // push_context
+                                // {
+                                //     log( "-> GetConsoleMode (%) :: return %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
+                                // }
                             }
 
                             case .Api_SetConsoleMode;
@@ -405,6 +413,11 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                     shell.output_console_mode = msg.Mode;
 
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
+
+                                // push_context
+                                // {
+                                //     log( "-> SetConsoleMode (%) :: set %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
+                                // }
                             }
 
                             case .Api_ReadConsole;
@@ -559,7 +572,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 if ReceiveMsg.Descriptor.Function
                     push_context
                     {
-                        log_warn( "### Unhandled CONDRV_READ_IO msg: %\n", ReceiveMsg.Descriptor.Function );
+                        log_warn( "### Unhandled IOCTL msg: %\n", ReceiveMsg.Descriptor.Function );
                     }
         }
 
@@ -706,31 +719,12 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                                then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize + size_of(CONSOLE_MSG_HEADER));
     totalBytes := ReceiveMsg.Descriptor.InputSize - readOffset;
 
-    #if false
-    {
-        read_op: CD_IO_OPERATION;
-        read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
-        read_op.Buffer.Offset = readOffset;
-        // TODO TODO TODO This is crap obvs
-        read_op.Buffer.Data = shell.outputBuffer.data;
-        read_op.Buffer.Size = totalBytes;
-
-        bytesRead: DWORD;
-        ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL, 0,
-        *bytesRead, NULL );
-        if !ok
-        push_context
-        {
-            log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
-            return STATUS_UNSUCCESSFUL;
-        }
-    }
-
     // TODO Review if we want / need to do anything for these flags:
     // ENABLE_VIRTUAL_TERMINAL_PROCESSING
     // ENABLE_PROCESSED_OUTPUT
     // ENABLE_WRAP_AT_EOL_OUTPUT
 
+    bytesRead: DWORD;
     writtenBytes: ULONG;
     // TODO Write a simple cmdline app to test the various console output methods together with codepages etc
     // TODO Add CP handling to splat2 to benchmark the 3 branches here?
@@ -752,7 +746,6 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         read_op.Buffer.Data = shell.stagingBuffer.data;
         read_op.Buffer.Size = totalBytes;
 
-        bytesRead: DWORD;
         ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
                                0, *bytesRead, NULL );
 
@@ -827,7 +820,6 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                 read_op.Buffer.Data = range.data;
                 read_op.Buffer.Size = cMin( totalBytes - writtenBytes, cast(u32) range.count );
 
-                bytesRead: DWORD;
                 ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
                                       0, *bytesRead, NULL );
                 if ok
@@ -856,8 +848,8 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         }
     }
 
-    write_msg.NumBytes = writtenBytes;
-    io_complete.IoStatus.Information = writtenBytes;
+    write_msg.NumBytes = bytesRead;
+    io_complete.IoStatus.Information = bytesRead;
     return STATUS_SUCCESS;
 }
 

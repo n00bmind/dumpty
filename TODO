@@ -1,4 +1,7 @@
 
+- Set up a systematic test suite using a cmdline app helper that can emit Windows Console commands etc
+- Write our own splat2
+
 - Output & atlas zoom mode
 
 - Continuous redrawing while resizing window
