@@ -38,8 +38,8 @@ CmdHostedShell :: struct
     stagingBuffer: [..] u8;
     outputBuffer: [..] u8;
 
-    // TODO Just make this a growable array?
-    inputEvents: [8192] KeyEvent;
+    // This is the buffer size that 'cmd' typically provides when requesting a read
+    inputEvents: [16384] KeyEvent;
     // TODO Atomics
     absInputsReadPos: s64;
     absInputsWritePos: s64;
@@ -121,8 +121,8 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
     UpdateProcThreadAttribute( si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, clientHandles.data,
                                size_of(type_of(clientHandles)), NULL, NULL );
 
-    cmd := WideStrTmp( "cmd.exe" );
-    // cmd := WideStrTmp( "C:\\Windows\\System32\\cmd.exe" );
+    // cmd := WideStrTmp( "cmd.exe" );
+    cmd := WideStrTmp( "C:\\Windows\\System32\\cmd.exe" );
 
     pi: PROCESS_INFORMATION;
     ok = CreateProcessW( NULL, cmd, NULL, NULL, .TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, *si.StartupInfo, *pi );
@@ -466,7 +466,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                                 // TODO Create a tester to ensure we're sending the correct info (in particular, srWindow?)
                                 // https://learn.microsoft.com/en-us/windows/console/console-screen-buffer-info-str
-                                // TODO Scroll pos / attributes?
+                                // TODO Scroll pos / attributes / color table?
                                 msg.FullscreenSupported = .FALSE;
                                 msg.CursorPosition = .{ xx cursor.x, xx cursor.y };
                                 msg.MaximumWindowSize = .{ xx state.cellCount.x, xx state.cellCount.y };
@@ -533,21 +533,22 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
 {
      // TODO Atomics / lock
-    readPos := shell.absInputsReadPos % shell.inputEvents.count;
-    writePos := shell.absInputsWritePos % shell.inputEvents.count;
-    lastWritePos := (shell.absInputsWritePos - 1) % shell.inputEvents.count;
+    readPos := shell.absInputsReadPos;
+    writePos := shell.absInputsWritePos;
 
     // Nothing to read
     if readPos == writePos
         return STATUS_TIMEOUT;
 
     read_msg: *CONSOLE_READCONSOLE_MSG = *ReceiveMsg.u.consoleMsgL1.ReadConsole;
+    user_write_buffer_size: ULONG = ReceiveMsg.Descriptor.OutputSize - ReceiveMsg.msgHeader.ApiDescriptorSize;
 
     // TODO Check Terminal code to figure out what this is about
     if read_msg.InitialNumBytes
         return STATUS_NOT_SUPPORTED;
 
     writeBuffer: [..] u8;
+    writeBuffer.allocator = temp;
 
     write_op: CD_IO_OPERATION;
     write_op.Identifier = ReceiveMsg.Descriptor.Identifier;
@@ -555,20 +556,70 @@ HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_
     write_op.Buffer.Offset = ifx ReceiveMsg.Descriptor.Function == CONSOLE_IO_RAW_READ
                              then 0 else ReceiveMsg.msgHeader.ApiDescriptorSize;
 
+    bytes_to_write: ULONG;
      // TODO Line mode, etc.
     line_mode_enabled := shell.input_console_mode & ENABLE_LINE_INPUT;
     if line_mode_enabled
     {
-        // FIXME Cannot do this, as there may have been new inputs since
-        // Should probably just check on push and count them up?
-        // lastChar := shell.inputEvents[lastWritePos];
-        // if lastChar != #char "\n"
-        //     return STATUS_TIMEOUT;
+        nextNewlinePos := -1;
+        for readPos .. writePos - 1
+        {
+            ev := shell.inputEvents[ it % shell.inputEvents.count ];
+            if ev.keyCode == Key_Code.ENTER
+            {
+                nextNewlinePos = it;
+                break;
+            }
+        }
 
+        if nextNewlinePos != -1
+        {
+            utf8Buffer: [4] u8;
+            utf8: string = xx utf8Buffer;
+            for readPos .. nextNewlinePos
+            {
+                ev := shell.inputEvents[ it % shell.inputEvents.count ];
+                push_context
+                {
+                    if ev.utf32
+                        character_utf32_to_utf8( ev.utf32, *utf8 );
+                    else
+                    {
+                        // TODO Special chars
+                        if ev.keyCode ==
+                        {
+                            case .ENTER;
+                                utf8 = "\r\n";
+                        }
+                    }
+
+                    if read_msg.Unicode
+                    {
+                        // TODO Do this on the stack
+                        wstr, lenBytes := WideStrTmp( utf8 );
+                        push( *writeBuffer, cast(*u8) wstr, lenBytes );
+                    }
+                    else
+                        push( *writeBuffer, utf8 );
+                }
+            }
+
+            push_context
+            {
+                bytes_to_write = Min( cast(ULONG) writeBuffer.count, user_write_buffer_size );
+            }
+            write_op.Buffer.Data = writeBuffer.data;
+            write_op.Buffer.Size = bytes_to_write;
+
+            shell.absInputsReadPos = nextNewlinePos + 1;
+            // TODO Reset InputAvailableEvent
+        }
     }
 
+    if bytes_to_write == 0
+        return STATUS_TIMEOUT;
 
-    // TODO bytesWritten?
+    // TODO Rename to bytesWritten?
     BytesRead: DWORD;
     ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_WRITE_OUTPUT, *write_op,
                            size_of(CD_IO_OPERATION), NULL, 0, *BytesRead, NULL );

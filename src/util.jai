@@ -6,6 +6,11 @@ log_warn :: ( format_string: string, args: .. Any, loc := #caller_location, flag
 } @PrintLike
 
 
+push :: ( array: *[..] $T, data: T )
+{
+    array_add( array, data );
+}
+
 push :: ( array: *[..] $T, data: *T, count: int )
 {
     oldCount := array.count;

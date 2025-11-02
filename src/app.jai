@@ -62,7 +62,9 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
             case .KEYBOARD;
             {
                 // NOTE Key_Code includes esoteric stuff like gamepad buttons as "keys"
-                writeEvent := it.key_code <= .PRINT_SCREEN;
+                // writeShellEvent := it.key_code <= .PRINT_SCREEN;
+                writeShellEvent := false;
+                utf32: u32;
 
                 if it.key_code ==
                 {
@@ -114,6 +116,10 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
 
                     case .ENTER;
                     {
+                        // TODO Does this also generate a TEXT_INPUT btw!?
+                        writeShellEvent = true;
+                        // utf32 = 0xd;
+
                         if cmdline
                         {
                             UpdateHistoryEntry( cmdline );
@@ -139,12 +145,12 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
                             //
                             // TODO nested WSL doesnt like this. We probably need to somehow listen to input/output console mode changes..
                             // Either that or we're gonna need to customize this per shell as well..
-                            push( *cmdline.input, "\r" );
-                            push( *cmdline.input, "\n" );
-                            if !appState.shell.writeProc( appState.shell, xx cmdline.input )
-                                AppendToSourceBuffer( *appState.sourceBuffer,
-                                                        "<<dumpty>> Internal error executing shell command\n",
-                                                        renderer );
+                            // push( *cmdline.input, "\r" );
+                            // push( *cmdline.input, "\n" );
+                            // if !appState.shell.writeProc( appState.shell, xx cmdline.input )
+                            //     AppendToSourceBuffer( *appState.sourceBuffer,
+                            //                             "<<dumpty>> Internal error executing shell command\n",
+                            //                             renderer );
                         }
 
                         cmdline.input.count = 0;
@@ -154,16 +160,14 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
                     {
                         renderer.debugDrawAtlas = !renderer.debugDrawAtlas;
                     }
-
-                    case;
-                        // For anything textual, let TEXT_INPUT handle it below
-                        writeEvent = false;
                 }
 
-                if writeEvent
+                if writeShellEvent
                 {
                     ev: KeyEvent;
                     ev.keyCode = it.key_code;
+                    if utf32
+                        ev.utf32 = utf32;
                     ev.modifiers = it.modifier_flags;
                     ev.isPressed = it.key_pressed != 0;
                     ev.repeat = it.repeat;
@@ -176,10 +180,6 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
             {
                 value := it.utf32;
 
-                // The maximum for UTF8 in practice is 4 bytes
-                str := alloc_string( 4 ,, temp );
-                character_utf32_to_utf8( value, *str );
-
                 ev: KeyEvent;
                 ev.keyCode = it.key_code;
                 ev.utf32 = it.utf32;
@@ -189,8 +189,13 @@ AppUpdateAndRender :: ( input: AppInput, memory: *AppMemory, renderer: *Renderer
 
                 appState.shell.writeEvProc( appState.shell, ev );
 
+                // The maximum for UTF8 in practice is 4 bytes
+                utf8Buffer: [4] u8;
+                utf8: string = xx utf8Buffer;
+                character_utf32_to_utf8( value, *utf8 );
+
                 // TODO Probably will want to move everything related to the custom command line & history into the shell
-                push( *cmdline.input, str );
+                push( *cmdline.input, utf8 );
                 UpdateHistoryEntry( cmdline );
 
                 appState.lastInputSeconds = seconds_since_init();
