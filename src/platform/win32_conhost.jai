@@ -1233,14 +1233,14 @@ CONSOLECONTROL :: enum
 //     ULONG ConsoleEventCode;
 //     ULONG ConsoleFlags;
 // } CONSOLEENDTASK, *PCONSOLEENDTASK;
-//
-// typedef struct _CONSOLEWINDOWOWNER
-// {
-//     HWND hwnd;
-//     ULONG ProcessId;
-//     ULONG ThreadId;
-// } CONSOLEWINDOWOWNER, *PCONSOLEWINDOWOWNER;
-//
+
+CONSOLEWINDOWOWNER :: struct
+{
+    hwnd: HWND;
+    ProcessId: ULONG;
+    ThreadId: ULONG;
+}
+
 // typedef struct _CONSOLESETFOREGROUND
 // {
 //     HANDLE hProcess;

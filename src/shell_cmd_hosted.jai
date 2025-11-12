@@ -5,7 +5,7 @@ CmdHostedShell :: struct
 {
     #as using base: Shell;
     base.startProc              = CmdHostedShellStart;
-    // base.shutdownProc           = CmdHostedShellShutdown;
+    base.shutdownProc           = CmdHostedShellShutdown;
     // base.writeProc              = CmdHostedShellWrite;
     base.writeEvProc            = CmdHostedShellWriteEv;
     base.readProc               = CmdHostedShellRead;
@@ -22,10 +22,9 @@ CmdHostedShell :: struct
     ioThreadHandle: HANDLE;
     inputEventHandle: HANDLE;
     keyEventHandle: HANDLE;
-    // processInfo: PROCESS_INFORMATION;
-    // consoleHandle: HPCON;
-    // pipeHandle: HANDLE;
-    // pipeOverlapped: *OVERLAPPED;
+
+    // Stack of connected processes
+    processes: [..] HANDLE;
 
     input_console_mode: ULONG = ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT
                               | ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS | ENABLE_AUTO_POSITION;
@@ -138,6 +137,22 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
 
     return true;
 }
+
+CmdHostedShellShutdown :: ( base: *Shell )
+{
+    shell: *CmdHostedShell = xx base;
+
+    // Signal IO thread we're done
+    shell.eof = true;
+
+    CloseHandle( shell.serverHandle );
+    CloseHandle( shell.keyEventHandle );
+    CloseHandle( shell.inputEventHandle );
+
+    // TODO Is this how you "join" a thread? Should we log if we timeout here?
+    WaitForSingleObject( shell.ioThreadHandle, 3 * 1000 );
+}
+
 
 ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 {
@@ -254,6 +269,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
         if ReceiveMsg.Descriptor.Function ==
         {
+            // TODO Review what MS Terminal does for connect / disconnect
             case CONSOLE_IO_CONNECT;
             {
                 data: CONSOLE_SERVER_MSG;
@@ -273,10 +289,13 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                         return 1;
                     }
 
-                    // TODO Register process info
-                // Assert(process_count < sizeof(processes) / sizeof(processes[0]));
-                // processes[process_count++] = (HANDLE)ReceiveMsg.Descriptor.Process;
-                //
+                // Register process info
+                // TODO Dont we need to save / restore each process' env or something else?
+                push_context
+                {
+                    push( *shell.processes, cast(HANDLE) ReceiveMsg.Descriptor.Process );
+                }
+
                      // TODO Set window title
                 // if (data.Title && process_count == 1) {
                 //     memcpy(console_title, data.Title, min((size_t)data.TitleLength + 1, sizeof(console_title)));
@@ -308,6 +327,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 connect_info.Output = OUTPUT_HANDLE;
                 connect_info.Process = ReceiveMsg.Descriptor.Process;
 
+                 // TODO Why do this here instead of at the top like everybody else?
                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                 io_complete.IoStatus.Information = size_of(CD_CONNECTION_INFORMATION);
                 io_complete.Write.Data = *connect_info;
@@ -322,9 +342,54 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                     }
             }
 
+            case CONSOLE_IO_DISCONNECT;
+            {
+                send_io_complete = true;
+
+                // Don't really need to maintain order, but whatevs..
+                push_context
+                {
+                    array_ordered_remove_by_value( *shell.processes,
+                                                   cast(HANDLE) ReceiveMsg.Descriptor.Process );
+                }
+
+                ConsoleOwner: CONSOLEWINDOWOWNER;
+                ConsoleOwner.hwnd = shell.appState.renderer.window;
+                ConsoleOwner.ProcessId = GetCurrentProcessId();
+                ConsoleOwner.ThreadId = GetCurrentThreadId();
+
+                status := shell.consoleControl( .ConsoleSetWindowOwner, *ConsoleOwner, size_of(CONSOLEWINDOWOWNER) );
+                if status != STATUS_SUCCESS
+                    push_context
+                    {
+                        // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
+                        log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
+                        return 1;
+                    }
+
+                io_complete.IoStatus.Status = STATUS_SUCCESS;
+            }
+
+            case CONSOLE_IO_CREATE_OBJECT;
+            {
+                send_io_complete = true;
+
+                handle := INVALID_HANDLE_VALUE;
+                CreateInformation := cast(*CD_CREATE_OBJECT_INFORMATION) *ReceiveMsg.CreateObject;
+
+                if CreateInformation.ObjectType == CD_IO_OBJECT_TYPE_CURRENT_INPUT
+                    handle = cast(HANDLE) INPUT_HANDLE;
+                else if CreateInformation.ObjectType == CD_IO_OBJECT_TYPE_CURRENT_OUTPUT
+                    handle = cast(HANDLE) OUTPUT_HANDLE;
+                else
+                {
+                    // not supported yet
+                }
+
+                io_complete.IoStatus.Status = xx ifx handle == INVALID_HANDLE_VALUE then STATUS_UNSUCCESSFUL else STATUS_SUCCESS;
+                io_complete.IoStatus.Information = cast(ULONG_PTR) handle;
+            }
             // TODO 
-            // case CONSOLE_IO_DISCONNECT;
-            // case CONSOLE_IO_CREATE_OBJECT;
             // case CONSOLE_IO_RAW_READ;
 
             case CONSOLE_IO_RAW_WRITE;
