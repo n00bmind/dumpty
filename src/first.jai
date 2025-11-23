@@ -10,6 +10,10 @@
 
 main :: ()
 {
+    // Install faster logger
+    context.logger = DeferredLogger;
+    // print( "### Context.logger: %\n", context.logger );
+
     binPath := path_strip_filename( get_path_of_running_executable() );
 
     runPath := binPath;
@@ -230,6 +234,7 @@ main :: ()
 #load "platform/win32.jai";
 #load "interface.jai";
 #load "opengl.jai";
+#load "util.jai";
 
 
 // TODO Add to autosaved state & configuration

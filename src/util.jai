@@ -1,4 +1,11 @@
 
+//// Deferred logging
+
+DeferredLogger :: (message: string, data: *void, info: Log_Info)
+{
+    // TODO 
+}
+
 log_warn :: ( format_string: string, args: .. Any, loc := #caller_location, flags := Log_Flags.NONE, user_flags : u32 = 0,
               section : *Log_Section = null )
 {
@@ -32,11 +39,6 @@ pop :: ( array: *[..] $T, count: int = 1 )
 {
     assert( array.count > 0 );
     array.count -= count;
-}
-
-cMin :: ( a: $T, b: T ) -> T #c_call
-{
-    return ifx a < b then a else b;
 }
 
 

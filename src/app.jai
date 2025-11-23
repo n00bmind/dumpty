@@ -3,6 +3,8 @@
 #program_export
 AppInit :: ( memory: *AppMemory, renderer: *RendererState )
 {
+    // print( "### Context.logger: %\n", context.logger );
+
     if !memory.initialized
     {
         Init( memory, renderer );

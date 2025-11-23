@@ -19,9 +19,10 @@ CmdHostedShell :: struct
     lastSourceAbsP: s64;
 
     serverHandle: HANDLE;
-    ioThreadHandle: HANDLE;
     inputEventHandle: HANDLE;
     keyEventHandle: HANDLE;
+
+    ioThread: Thread;
 
     // Stack of connected processes
     processes: [..] HANDLE;
@@ -53,6 +54,7 @@ CmdHostedShell :: struct
 #scope_file
 
 #import "Windows";
+#import "Thread";
 // #import "Windows_Utf8";
 // System :: #import "System";
 
@@ -90,7 +92,10 @@ CmdHostedShellStart :: ( base: *Shell ) -> bool
         return false;
     }
 
-    shell.ioThreadHandle = CreateThread( NULL, 0, xx ConsoleIoThread, shell, 0, NULL );
+    thread_init( *shell.ioThread, ConsoleIoThread );
+
+    shell.ioThread.data = shell;
+    thread_start( *shell.ioThread );
 
     // This should be enough for Conhost setup
 
@@ -150,13 +155,16 @@ CmdHostedShellShutdown :: ( base: *Shell )
     CloseHandle( shell.inputEventHandle );
 
     // TODO Is this how you "join" a thread? Should we log if we timeout here?
-    WaitForSingleObject( shell.ioThreadHandle, 3 * 1000 );
+    WaitForSingleObject( shell.ioThread.windows_thread, 3 * 1000 );
+    thread_deinit( *shell.ioThread );
 }
 
 
-ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
+ConsoleIoThread :: ( thread: *Thread ) -> s64
 {
-    shell: *CmdHostedShell = xx lpParameter;
+    // print( "### Thread's Context.logger: %\n", context.logger );
+
+    shell: *CmdHostedShell = xx thread.data;
 
     send_io_complete := false;
     io_complete: CD_IO_COMPLETE;
@@ -195,10 +203,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                     if result == WAIT_FAILED
                     {
-                        push_context
-                        {
-                            log_error( "Failed waiting for IOCTLs & input\n" );
-                        }
+
+                        log_error( "Failed waiting for IOCTLs & input\n" );
                         return 1;
                     }
                     else
@@ -228,10 +234,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             }
                             case;
                             {
-                                push_context
-                                {
-                                    assert( false && "Invalid signaled handle index" );
-                                }
+
+                                assert( false && "Invalid signaled handle index" );
                                 return 1;
                             }
                         }
@@ -247,10 +251,8 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 }
                 else
                 {
-                    push_context
-                    {
-                        log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
-                    }
+
+                    log_error( "CONDRV_READ_IO failed: %\n", get_error_string( err ) );
                     // TODO Is the shell monitoring the status of this thread anywhere?
                     return 1;
                 }
@@ -283,18 +285,15 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *op, size_of(CD_IO_OPERATION), NULL, 0,
                                       *BytesRead, NULL );
                 if !ok
-                    push_context
-                    {
-                        log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
-                        return 1;
-                    }
+                {
+                    log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+                    return 1;
+                }
 
                 // Register process info
                 // TODO Dont we need to save / restore each process' env or something else?
-                push_context
-                {
-                    push( *shell.processes, cast(HANDLE) ReceiveMsg.Descriptor.Process );
-                }
+                push( *shell.processes, cast(HANDLE) ReceiveMsg.Descriptor.Process );
+
 
                      // TODO Set window title
                 // if (data.Title && process_count == 1) {
@@ -310,12 +309,11 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                     status := shell.consoleControl( .ConsoleNotifyConsoleApplication, *cpi, size_of(CONSOLE_PROCESS_INFO) );
                     if status != STATUS_SUCCESS
-                        push_context
-                        {
-                            // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
-                            log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
-                            return 1;
-                        }
+                    {
+                        // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
+                        log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
+                        return 1;
+                    }
                 }
                 // todo: allocate new console if not created before
                 // todo: notify OS that app is foreground
@@ -335,11 +333,10 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_COMPLETE_IO, *io_complete, size_of(CD_IO_COMPLETE),
                                       NULL, 0, *BytesRead, NULL );
                 if !ok
-                    push_context
-                    {
-                        log_error( "CONDRV_COMPLETE_IO failed: %\n", get_error_value_and_string() );
-                        return 1;
-                    }
+                {
+                    log_error( "CONDRV_COMPLETE_IO failed: %\n", get_error_value_and_string() );
+                    return 1;
+                }
             }
 
             case CONSOLE_IO_DISCONNECT;
@@ -347,11 +344,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 send_io_complete = true;
 
                 // Don't really need to maintain order, but whatevs..
-                push_context
-                {
-                    array_ordered_remove_by_value( *shell.processes,
-                                                   cast(HANDLE) ReceiveMsg.Descriptor.Process );
-                }
+                array_ordered_remove_by_value( *shell.processes, cast(HANDLE) ReceiveMsg.Descriptor.Process );
 
                 ConsoleOwner: CONSOLEWINDOWOWNER;
                 ConsoleOwner.hwnd = shell.appState.renderer.window;
@@ -360,12 +353,11 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                 status := shell.consoleControl( .ConsoleSetWindowOwner, *ConsoleOwner, size_of(CONSOLEWINDOWOWNER) );
                 if status != STATUS_SUCCESS
-                    push_context
-                    {
-                        // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
-                        log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
-                        return 1;
-                    }
+                {
+                    // TODO https://stackoverflow.com/questions/78683179/which-api-returns-the-message-for-ntstatus
+                    log_error( "ConsoleControl failed: %\n", formatInt( status , base=16 ) );
+                    return 1;
+                }
 
                 io_complete.IoStatus.Status = STATUS_SUCCESS;
             }
@@ -462,10 +454,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
 
-                                // push_context
-                                // {
-                                //     log( "-> GetConsoleMode (%) :: return %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
-                                // }
+                                // log( "-> GetConsoleMode (%) :: return %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
                             }
 
                             case .Api_SetConsoleMode;
@@ -479,10 +468,7 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
 
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
 
-                                // push_context
-                                // {
-                                //     log( "-> SetConsoleMode (%) :: set %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
-                                // }
+                                // log( "-> SetConsoleMode (%) :: set %\n", ReceiveMsg.Descriptor.Object, formatInt( msg.Mode, base = 16 ) );
                             }
 
                             case .Api_ReadConsole;
@@ -522,10 +508,9 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                 io_complete.IoStatus.Status = STATUS_NOT_SUPPORTED;
 
                             case;
-                                push_context
-                                {
-                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l1_type );
-                                }
+                            {
+                                log_warn( "### Unhandled L% request %\n", LayerNumber, l1_type );
+                            }
                         }
                     }
                     case 2;
@@ -559,19 +544,15 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             case .Api_GetConsoleTitle;
                             {
                                 msg: *CONSOLE_GETTITLE_MSG = *ReceiveMsg.u.consoleMsgL2.GetConsoleTitle;
-                                push_context
-                                {
-                                    assert( msg.Unicode && "Non Unicode not supported" );
-                                }
+                                assert( msg.Unicode && "Non Unicode not supported" );
 
                                 wstr: PCWSTR;
                                 bytes: s32;
-                                push_context
-                                {
-                                    // TODO 
-                                    // TODO Does this include the terminator
-                                    wstr, bytes = WideStrTmp( "dumpty" );
-                                }
+
+                                // TODO 
+                                // TODO Does this include the terminator
+                                wstr, bytes = WideStrTmp( "dumpty" );
+
 
                                 write_op: CD_IO_OPERATION;
                                 write_op.Identifier = ReceiveMsg.Descriptor.Identifier;
@@ -583,22 +564,19 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                                 ok := DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_WRITE_OUTPUT, *write_op,
                                                        size_of(CD_IO_OPERATION), NULL, 0, *BytesRead, NULL );
 
-                                push_context
-                                {
-                                    // FIXME How do we convert this to NTSTATUS?
-                                    hr := ifx ok then S_OK else GetLastErrorAsHr();
-                                    assert( SUCCEEDED(hr) );
-                                }
+
+                                // FIXME How do we convert this to NTSTATUS?
+                                hr := ifx ok then S_OK else GetLastErrorAsHr();
+                                assert( SUCCEEDED(hr) );
 
                                 io_complete.IoStatus.Status = STATUS_SUCCESS;
                                 io_complete.IoStatus.Information = xx bytes;
                             }
 
                             case;
-                                push_context
-                                {
-                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l2_type );
-                                }
+                            {
+                                log_warn( "### Unhandled L% request %\n", LayerNumber, l2_type );
+                            }
                         }
                     }
                     case 3;
@@ -616,18 +594,16 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                             }
 
                             case;
-                                push_context
-                                {
-                                    log_warn( "### Unhandled L% request %\n", LayerNumber, l3_type );
-                                }
+                            {
+                                log_warn( "### Unhandled L% request %\n", LayerNumber, l3_type );
+                            }
                         }
                     }
 
                     case;
-                        push_context
-                        {
-                            log_error( "### Unknown layer % request %\n", LayerNumber, ApiNumber );
-                        }
+                    {
+                        log_error( "### Unknown layer % request %\n", LayerNumber, ApiNumber );
+                    }
                 }
             }
 
@@ -635,42 +611,39 @@ ConsoleIoThread :: ( lpParameter: *void ) -> DWORD #c_call
                 // We let control fall through to the handling code when we got user input but there's no pending read msg
                 // So we could have an empty msg descriptor here, which is utterly uninteresting.
                 if ReceiveMsg.Descriptor.Function
-                    push_context
-                    {
-                        log_warn( "### Unhandled IOCTL msg: %\n", ReceiveMsg.Descriptor.Function );
-                    }
+                {
+                    log_warn( "### Unhandled IOCTL msg: %\n", ReceiveMsg.Descriptor.Function );
+                }
         }
 
         // TODO The error we're getting spammed with seems to be ERROR_WRITE_FAULT (generic winerror.h code)
-        push_context
+        if ReceiveMsg.Descriptor.Function == CONSOLE_IO_USER_DEFINED
         {
-            if ReceiveMsg.Descriptor.Function == CONSOLE_IO_USER_DEFINED
+            LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24);
+            ApiNumber: ULONG = ReceiveMsg.msgHeader.ApiNumber & 0xffffff;
+            if LayerNumber ==
             {
-                LayerNumber: ULONG = (ReceiveMsg.msgHeader.ApiNumber >> 24);
-                ApiNumber: ULONG = ReceiveMsg.msgHeader.ApiNumber & 0xffffff;
-                if LayerNumber ==
-                {
-                    case 1;
-                        l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
-                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l1_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
-                    case 2;
-                        l2_type := cast(CONSOLE_L2_API_TYPE) ApiNumber;
-                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l2_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
-                    case 3;
-                        l3_type := cast(CONSOLE_L3_API_TYPE) ApiNumber;
-                        log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l3_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
-                }
+                case 1;
+                    l1_type := cast(CONSOLE_L1_API_TYPE) ApiNumber;
+                    log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l1_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
+                case 2;
+                    l2_type := cast(CONSOLE_L2_API_TYPE) ApiNumber;
+                    log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l2_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
+                case 3;
+                    l3_type := cast(CONSOLE_L3_API_TYPE) ApiNumber;
+                    log( "-> User L%/% (%) \t:: reply %, status %\n", LayerNumber, ApiNumber, l3_type, send_io_complete, formatInt( io_complete.IoStatus.Status, base = 16 ) );
             }
-            else
-                log( "-> IOCTL %\n", ReceiveMsg.Descriptor.Function );
         }
+        else
+            log( "-> IOCTL %\n", ReceiveMsg.Descriptor.Function );
+
 
     }
 
     return 0;
 }
 
-HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
+HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS
 {
      // TODO Atomics / lock
     readPos := shell.absInputsReadPos;
@@ -719,35 +692,32 @@ HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_
             for readPos .. nextNewlinePos
             {
                 ev := shell.inputEvents[ it % shell.inputEvents.count ];
-                push_context
+
+                if ev.utf32
+                    character_utf32_to_utf8( ev.utf32, *utf8 );
+                else
                 {
-                    if ev.utf32
-                        character_utf32_to_utf8( ev.utf32, *utf8 );
-                    else
+                    // TODO Special chars
+                    if ev.keyCode ==
                     {
-                        // TODO Special chars
-                        if ev.keyCode ==
-                        {
-                            case .ENTER;
-                                utf8 = "\r\n";
-                        }
+                        case .ENTER;
+                            utf8 = "\r\n";
                     }
-
-                    if read_msg.Unicode
-                    {
-                        // TODO Do this on the stack
-                        wstr, lenBytes := WideStrTmp( utf8 );
-                        push( *writeBuffer, cast(*u8) wstr, lenBytes );
-                    }
-                    else
-                        push( *writeBuffer, utf8 );
                 }
+
+                if read_msg.Unicode
+                {
+                    // TODO Do this on the stack
+                    wstr, lenBytes := WideStrTmp( utf8 );
+                    push( *writeBuffer, cast(*u8) wstr, lenBytes );
+                }
+                else
+                    push( *writeBuffer, utf8 );
+
             }
 
-            push_context
-            {
-                bytes_to_write = Min( cast(ULONG) writeBuffer.count, user_write_buffer_size );
-            }
+
+            bytes_to_write = Min( cast(ULONG) writeBuffer.count, user_write_buffer_size );
             write_op.Buffer.Data = writeBuffer.data;
             write_op.Buffer.Size = bytes_to_write;
 
@@ -775,7 +745,7 @@ HandleReadMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_
 
 // TODO Should we just push a context before calling in here?
 // Would be interesting to compare if there's any kind of measurable speed difference?
-HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS #c_call
+HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io_complete: *CD_IO_COMPLETE ) -> NTSTATUS
 {
     write_msg := *ReceiveMsg.u.consoleMsgL1.WriteConsole;
 
@@ -800,10 +770,7 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         // https://doxygen.reactos.org/d0/d25/host_2wine_2unicode_8h.html#a4ebb1e7521c31f253a6ffff808adc668
 
         // Copy to staging buffer
-        push_context
-        {
-            array_resize( *shell.stagingBuffer, totalBytes, false ); // Don't init the new range
-        }
+        array_resize( *shell.stagingBuffer, totalBytes, false ); // Don't init the new range
 
         read_op: CD_IO_OPERATION;
         read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
@@ -815,11 +782,10 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                                0, *bytesRead, NULL );
 
         if !ok || bytesRead < totalBytes
-            push_context
-            {
-                log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
-                return STATUS_UNSUCCESSFUL;
-            }
+        {
+            log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+            return STATUS_UNSUCCESSFUL;
+        }
 
         // Convert to utf8
         // TODO Convert directly into the final SourceBuffer location, using something like GetContiguousView
@@ -827,36 +793,29 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
         totalChars := totalBytes / 2;
         // Worst case is 3 utf8 code units (bytes) per utf16 code unit ("char")
         maxRequiredBytes := totalChars * 3;
-        push_context
-        {
-            assert( totalBytes & 1 == 0 && "Incoming utf16 byte length is not divisible by 2" );
-            array_resize( *shell.outputBuffer, maxRequiredBytes, false ); // Don't init the new range
-        }
+
+        assert( totalBytes & 1 == 0 && "Incoming utf16 byte length is not divisible by 2" );
+        array_resize( *shell.outputBuffer, maxRequiredBytes, false ); // Don't init the new range
+
 
         writtenBytes = xx WideCharToMultiByte( CP_UTF8, 0, xx shell.stagingBuffer.data, xx totalChars,
                                                shell.outputBuffer.data, xx maxRequiredBytes, NULL, NULL );
 
         if !writtenBytes
-            push_context
-            {
-                log_error( "WideCharToMultiByte failed: %\n", get_error_value_and_string() );
-                return STATUS_UNSUCCESSFUL;
-            }
+        {
+            log_error( "WideCharToMultiByte failed: %\n", get_error_value_and_string() );
+            return STATUS_UNSUCCESSFUL;
+        }
 
         // Finally copy to SourceBuffer
         // TODO Atomics!
         range: [] u8;
-        push_context
-        {
-            range = GetNextWriteableRange( *shell.appState.sourceBuffer );
-        }
+        range = GetNextWriteableRange( *shell.appState.sourceBuffer );
+
 
         // FIXME Ensure returned range can hold writtenBytes! It's just easier to do the GetContiguousView thing though..
         memcpy( range.data, shell.outputBuffer.data, writtenBytes );
-        push_context
-        {
-            CommitWrite( *shell.appState.sourceBuffer, xx writtenBytes );
-        }
+        CommitWrite( *shell.appState.sourceBuffer, xx writtenBytes );
     }
     else
     {
@@ -874,16 +833,14 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
             {
                 // TODO Atomics!
                 range: [] u8;
-                push_context
-                {
-                    range = GetNextWriteableRange( *shell.appState.sourceBuffer );
-                }
+                range = GetNextWriteableRange( *shell.appState.sourceBuffer );
+
 
                 read_op: CD_IO_OPERATION;
                 read_op.Identifier = ReceiveMsg.Descriptor.Identifier;
                 read_op.Buffer.Offset = readOffset;
                 read_op.Buffer.Data = range.data;
-                read_op.Buffer.Size = cMin( totalBytes - writtenBytes, cast(u32) range.count );
+                read_op.Buffer.Size = Min( totalBytes - writtenBytes, cast(u32) range.count );
 
                 ok = DeviceIoControl( shell.serverHandle, IOCTL_CONDRV_READ_INPUT, *read_op, size_of(CD_IO_OPERATION), NULL,
                                       0, *bytesRead, NULL );
@@ -891,19 +848,15 @@ HandleWriteMessage :: ( shell: *CmdHostedShell, ReceiveMsg: *CONSOLE_API_MSG, io
                 {
                     if bytesRead
                     {
-                        push_context
-                        {
-                            CommitWrite( *shell.appState.sourceBuffer, xx bytesRead );
-                        }
+                        CommitWrite( *shell.appState.sourceBuffer, xx bytesRead );
                         writtenBytes += bytesRead;
                     }
                 }
                 else
-                    push_context
-                    {
-                        log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
-                        return STATUS_UNSUCCESSFUL;
-                    }
+                {
+                    log_error( "CONDRV_READ_INPUT failed: %\n", get_error_value_and_string() );
+                    return STATUS_UNSUCCESSFUL;
+                }
             }
         }
         // else
